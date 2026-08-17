@@ -12,7 +12,7 @@
  */
 
 const PREFIX = 'hra:';
-const ALLOWED = ['users', 'history', 'logins', 'edits', 'newrows', 'snapshots', 'gs', 'sheetdata'];
+const ALLOWED = ['users', 'history', 'logins', 'edits', 'newrows', 'snapshots', 'gs', 'sheetdata', 'removed'];
 
 function creds() {
   const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
