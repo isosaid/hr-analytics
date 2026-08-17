@@ -1429,27 +1429,39 @@ var CLOUD = {on:null, keys:['users','history','logins','edits','newrows','snapsh
 function HIST_CAP_REF(){ return 3000; }
 function LOGIN_CAP_REF(){ return 2000; }
 
+/* коды, при которых запрос стоит просто повторить, а не объявлять базу недоступной */
+function cloudTransient(code){ return code===499 || code===408 || code===425 || code===429 ||
+                                      code===500 || code===502 || code===503 || code===504; }
 function cloudSay(txt, color){
   var el = document.getElementById('cloudState');
   if(el) el.innerHTML = '<span style="color:'+(color||'var(--muted)')+'">'+esc(txt)+'</span>';
 }
+function cloudOkSay(){ cloudSay('База Vercel подключена · синхронизировано ' + nowStr(), 'var(--green)'); }
 /* отправка значения на сервер (без ожидания) */
-function cloudPush(key, value){
+function cloudPush(key, value, attempt){
   if(CLOUD.on===false) return;
+  attempt = attempt || 0;
   var body = (key==='history'||key==='logins')
     ? {key:key, merge:value, cap:(key==='history'?HIST_CAP_REF():LOGIN_CAP_REF())}
     : {key:key, value:value};
   fetch('/api/db', {method:'POST', headers:{'Content-Type':'application/json'},
-                    body:JSON.stringify(body), cache:'no-store'})
-    .then(function(r){ if(r.status===501) CLOUD.on=false; else if(r.ok) CLOUD.on=true; })
-    .catch(function(){});
+                    body:JSON.stringify(body), cache:'no-store', keepalive:(key!=='sheetdata')})
+    .then(function(r){
+      if(r.status===501){ CLOUD.on=false; return; }
+      if(r.ok){ CLOUD.on=true; CLOUD.fails=0; return; }
+      if(cloudTransient(r.status) && attempt<2)
+        setTimeout(function(){ cloudPush(key, value, attempt+1); }, 3000*(attempt+1));
+    })
+    .catch(function(){
+      if(attempt<2) setTimeout(function(){ cloudPush(key, value, attempt+1); }, 3000*(attempt+1));
+    });
 }
 /* забрать состояние с сервера и слить с локальным */
 function cloudPull(){
   return fetch('/api/db?keys='+CLOUD.keys.join(','), {cache:'no-store'})
     .then(function(r){
       if(r.status===501){ CLOUD.on=false; cloudSay('База не подключена — данные хранятся только в этом браузере.'); return null; }
-      if(!r.ok) throw new Error('ответ '+r.status);
+      if(!r.ok){ var e=new Error('ответ '+r.status); e.code=r.status; throw e; }
       return r.json();
     })
     .then(function(j){
@@ -1490,12 +1502,21 @@ function cloudPull(){
         NEWROWS = DB.get('newrows', []);
         applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
       }
-      CLOUD.lastPull = Date.now();
-      cloudSay('База Vercel подключена · синхронизировано ' + nowStr(), 'var(--green)');
+      CLOUD.lastPull = Date.now(); CLOUD.fails = 0;
+      cloudOkSay();
       return d;
     })
     .catch(function(e){
-      if(CLOUD.on!==false) cloudSay('База недоступна: '+e.message+' — работаем локально.', 'var(--amber)');
+      if(CLOUD.on===false) return null;
+      CLOUD.fails = (CLOUD.fails||0) + 1;
+      /* обрыв соединения — обычное дело, молча повторяем */
+      if(cloudTransient(e.code) || CLOUD.fails<3){
+        if(CLOUD.lastPull) cloudOkSay();      /* уже синхронизировались — не пугаем пользователя */
+        else cloudSay('Подключаюсь к базе…');
+        setTimeout(function(){ cloudPull(); }, 5000*CLOUD.fails);
+        return null;
+      }
+      cloudSay('База недоступна: '+e.message+' — работаем локально.', 'var(--amber)');
       return null;
     });
 }
@@ -1607,7 +1628,7 @@ function gsFetchData(silent){
       DB.set('gs', cfg2);
       applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
       gsSetStamp(cfg2);
-      cloudPushSheet(recs);            /* копия данных в общей базе Vercel */
+      setTimeout(function(){ cloudPushSheet(recs); }, 4000);   /* копия в базе, без гонки с другими запросами */
       if(!silent){
         logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
           fieldLabel:'Обновление из Google Sheets', before:was+' строк', after:recs.length+' строк'});
