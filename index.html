@@ -1431,7 +1431,7 @@ function LOGIN_CAP_REF(){ return 2000; }
 
 /* коды, при которых запрос стоит просто повторить, а не объявлять базу недоступной */
 function cloudTransient(code){ return code===499 || code===408 || code===425 || code===429 ||
-                                      code===500 || code===502 || code===503 || code===504; }
+                                      code===502 || code===503 || code===504; }
 function cloudSay(txt, color){
   var el = document.getElementById('cloudState');
   if(el) el.innerHTML = '<span style="color:'+(color||'var(--muted)')+'">'+esc(txt)+'</span>';
@@ -1461,7 +1461,12 @@ function cloudPull(){
   return fetch('/api/db?keys='+CLOUD.keys.join(','), {cache:'no-store'})
     .then(function(r){
       if(r.status===501){ CLOUD.on=false; cloudSay('MS Access / SQL — база не подключена, данные только в этом браузере.'); return null; }
-      if(!r.ok){ var e=new Error('ответ '+r.status); e.code=r.status; throw e; }
+      if(!r.ok){
+        return r.text().then(function(t){
+          var why=''; try{ var j=JSON.parse(t); why = j.reason||j.hint||''; }catch(e2){}
+          var e=new Error('ответ '+r.status+(why?' · '+why:'')); e.code=r.status; throw e;
+        });
+      }
       return r.json();
     })
     .then(function(j){
@@ -1516,7 +1521,7 @@ function cloudPull(){
         setTimeout(function(){ cloudPull(); }, 5000*CLOUD.fails);
         return null;
       }
-      cloudSay('MS Access / SQL — база недоступна: '+e.message+', работаем локально.', 'var(--amber)');
+      cloudSay('MS Access / SQL — база недоступна: '+e.message+'. Проверка: /api/db?diag=1', 'var(--amber)');
       return null;
     });
 }
