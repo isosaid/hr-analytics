@@ -206,7 +206,7 @@
       <button class="tab-btn" data-tab="history">История</button>
     </div>
     <div class="user-box">
-      <div class="as-of" id="asOfNote"></div>
+      <div class="as-of"><span id="asOfNote"></span><br><span id="gsStamp" style="color:#7d8496"></span></div>
       <div class="user-chip" id="userChip">
         <span class="user-av" id="userAv">–</span>
         <span><b id="userName">–</b><br><span class="user-role" id="userRole">–</span></span>
@@ -429,6 +429,13 @@
               <input type="text" id="gsId" placeholder="ID таблицы (между /d/ и /edit)">
               <input type="text" id="gsSheet" placeholder="Название листа или gid" style="max-width:200px">
               <button class="btn primary" id="gsLoadBtn">↻ Обновить данные</button>
+              <select id="gsAuto" style="border:1.5px solid var(--line);border-radius:9px;padding:8px 10px;font-family:inherit;font-size:13px">
+                <option value="1">каждую минуту</option>
+                <option value="3">каждые 3 минуты</option>
+                <option value="5">каждые 5 минут</option>
+                <option value="15">каждые 15 минут</option>
+                <option value="0">не обновлять автоматически</option>
+              </select>
             </div>
             <div id="gsMsg" style="font-size:12.5px;min-height:18px;line-height:1.5"></div>
           </div>
@@ -1372,44 +1379,85 @@ function rowsToRecords(rows){
 }
 function gsUrl(id, sheet){
   var base='https://docs.google.com/spreadsheets/d/'+encodeURIComponent(id)+'/gviz/tq?tqx=out:csv';
-  if(!sheet) return base;
-  return base + (/^\d+$/.test(String(sheet).trim())
+  if(sheet) base += (/^\d+$/.test(String(sheet).trim())
     ? '&gid='+encodeURIComponent(String(sheet).trim())
     : '&sheet='+encodeURIComponent(sheet));
+  return base + '&_=' + Date.now();   /* обход кэша Google и браузера */
 }
-function gsRefresh(){
-  var msg=document.getElementById('gsMsg');
-  if(!canEdit()){ msg.innerHTML='<span style="color:var(--red)">Обновлять данные могут сотрудники Авесто и администратор.</span>'; return; }
-  var id=(document.getElementById('gsId').value||'').trim();
-  var sh=(document.getElementById('gsSheet').value||'').trim();
-  if(!id){ msg.innerHTML='<span style="color:var(--red)">Укажите ID таблицы.</span>'; return; }
+function gsSetStamp(cfg){
+  var el = document.getElementById('gsStamp');
+  if(el) el.textContent = (cfg && cfg.when) ? ('Данные из таблицы · ' + cfg.when) : '';
+}
+/* silent=true — фоновое обновление: без вопросов и без рапорта об успехе */
+function gsFetchData(silent){
+  var cfg = DB.get('gs', null) || GS_DEFAULT;
+  var idEl = document.getElementById('gsId'), shEl = document.getElementById('gsSheet');
+  var id = (!silent && idEl) ? (idEl.value||'').trim() : (cfg.id || GS_DEFAULT.id);
+  var sh = (!silent && shEl) ? (shEl.value||'').trim() : (cfg.sheet!==undefined?cfg.sheet:GS_DEFAULT.sheet);
+  var msg = document.getElementById('gsMsg');
+  if(!id) return Promise.reject(new Error('не указан ID таблицы'));
   var hadLocal = Object.keys(EDITS).length + NEWROWS.length;
-  if(hadLocal && !confirm('Данные будут заменены содержимым Google-таблицы.\n'+
-      'Локальные правки ('+hadLocal+') будут отменены. Журналы сохранятся. Продолжить?')) return;
-  msg.innerHTML='<span style="color:var(--muted)">Загружаю таблицу…</span>';
+  if(silent && hadLocal){
+    if(msg) msg.innerHTML='<span style="color:var(--amber)">Автообновление приостановлено: есть локальные правки ('+
+      hadLocal+'). Нажмите «Обновить данные», чтобы заменить их данными таблицы.</span>';
+    return Promise.resolve(null);
+  }
+  if(!silent){
+    if(!canEdit()){ if(msg) msg.innerHTML='<span style="color:var(--red)">Обновлять данные могут сотрудники Авесто и администратор.</span>';
+      return Promise.reject(new Error('нет прав')); }
+    if(hadLocal && !confirm('Данные будут заменены содержимым Google-таблицы.\n'+
+        'Локальные правки ('+hadLocal+') будут отменены. Журналы сохранятся. Продолжить?')) return Promise.resolve(null);
+    if(msg) msg.innerHTML='<span style="color:var(--muted)">Загружаю таблицу…</span>';
+  }
   var was = RAW.length;
-  fetch(gsUrl(id, sh), {credentials:'omit'})
+  return fetch(gsUrl(id, sh), {credentials:'omit', cache:'no-store'})
     .then(function(r){ if(!r.ok) throw new Error('ответ сервера '+r.status); return r.text(); })
     .then(function(txt){
       if(/^\s*</.test(txt)) throw new Error('вместо данных пришла веб-страница — скорее всего к таблице нет доступа по ссылке');
       var recs = rowsToRecords(parseCSV(txt));
-      RAW = recs;
-      EDITS = {}; NEWROWS = [];
+      var changed = JSON.stringify(recs)!==JSON.stringify(RAW);
+      RAW = recs; EDITS = {}; NEWROWS = [];
       persistEdits(); persistNew();
       try { DB.set('sheetdata', recs); } catch(e){}
-      DB.set('gs', {id:id, sheet:sh, when:nowStr(), rows:recs.length});
+      var cfg2 = {id:id, sheet:sh, when:nowStr(), rows:recs.length};
+      DB.set('gs', cfg2);
       applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
-      logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
-        fieldLabel:'Обновление из Google Sheets', before:was+' строк', after:recs.length+' строк'});
-      msg.innerHTML='<span style="color:var(--green)">Готово: загружено '+fmt(recs.length)+' строк ('+
-        (recs.length-was>=0?'+':'')+fmt(recs.length-was)+' к прежним '+fmt(was)+'). Обновлено '+nowStr()+'.</span>';
-      renderHistory();
+      gsSetStamp(cfg2);
+      if(!silent){
+        logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
+          fieldLabel:'Обновление из Google Sheets', before:was+' строк', after:recs.length+' строк'});
+        if(msg) msg.innerHTML='<span style="color:var(--green)">Готово: загружено '+fmt(recs.length)+' строк ('+
+          (recs.length-was>=0?'+':'')+fmt(recs.length-was)+' к прежним '+fmt(was)+'). Обновлено '+nowStr()+'.</span>';
+        renderHistory();
+      } else if(msg){
+        msg.innerHTML='<span style="color:var(--muted)">Автообновление '+nowStr()+' · '+fmt(recs.length)+' строк'+
+          (changed?' · данные изменились':' · без изменений')+'.</span>';
+      }
+      return recs;
     })
     .catch(function(err){
-      msg.innerHTML='<span style="color:var(--red)">Не удалось обновить: '+esc(err.message)+'.</span>'+
-        '<br><span style="color:var(--muted)">Проверьте, что таблица открыта «Всем, у кого есть ссылка» как «Читатель», '+
-        'и что файл дашборда открыт по адресу https:// (с локального диска браузер блокирует запрос).</span>';
+      if(msg){
+        msg.innerHTML = silent
+          ? '<span style="color:var(--amber)">Автообновление не удалось: '+esc(err.message)+'.</span>'
+          : '<span style="color:var(--red)">Не удалось обновить: '+esc(err.message)+'.</span>'+
+            '<br><span style="color:var(--muted)">Проверьте, что таблица открыта «Всем, у кого есть ссылка» как «Читатель», '+
+            'и что дашборд открыт по адресу https:// (с локального диска браузер блокирует запрос).</span>';
+      }
+      throw err;
     });
+}
+function gsRefresh(){ gsFetchData(false).catch(function(){}); }
+
+/* фоновое обновление */
+var GS_TIMER = null;
+function gsStartAuto(){
+  if(GS_TIMER){ clearInterval(GS_TIMER); GS_TIMER=null; }
+  var mins = parseInt(DB.get('gsauto', 3), 10);
+  if(!mins) return;
+  GS_TIMER = setInterval(function(){
+    if(document.hidden) return;
+    gsFetchData(true).catch(function(){});
+  }, mins*60000);
 }
 function initGS(){
   var cfg = DB.get('gs', null) || GS_DEFAULT;
@@ -1418,8 +1466,26 @@ function initGS(){
   document.getElementById('gsCard').style.display = canEdit() ? '' : 'none';
   if(cfg.when) document.getElementById('gsMsg').innerHTML =
     '<span style="color:var(--muted)">Последнее обновление: '+esc(cfg.when)+' · '+fmt(cfg.rows||0)+' строк.</span>';
+  document.getElementById('gsAuto').value = String(DB.get('gsauto', 3));
+  gsSetStamp(cfg);
+}
+function gsBoot(){
+  gsSetStamp(DB.get('gs', null));
+  gsFetchData(true).catch(function(){});   /* свежие данные сразу при входе */
+  gsStartAuto();
+  document.addEventListener('visibilitychange', function(){
+    if(!document.hidden) gsFetchData(true).catch(function(){});
+  });
 }
 document.getElementById('gsLoadBtn').addEventListener('click', gsRefresh);
+document.getElementById('gsAuto').addEventListener('change', function(){
+  DB.set('gsauto', parseInt(this.value,10));
+  gsStartAuto();
+  var m=document.getElementById('gsMsg');
+  m.innerHTML = parseInt(this.value,10)
+    ? '<span style="color:var(--green)">Автообновление включено: '+esc(this.options[this.selectedIndex].text)+'.</span>'
+    : '<span style="color:var(--muted)">Автообновление выключено.</span>';
+});
 
 function renderLogins(){
   var logs = getLogins();
@@ -1708,6 +1774,7 @@ function startApp(user){
   } else { fc.value=''; fc.disabled = false; fc.title=''; }
   if(!DB.ok) console.warn('localStorage недоступен — история не сохранится между сессиями');
   renderAll();
+  try { gsBoot(); } catch(e){ console.error('gsBoot', e); }
   var def = getUsers().find(function(u){ return u.login===user.login && u.isDefault; });
   if(def) setTimeout(function(){
     var m=document.getElementById('userMsg');
