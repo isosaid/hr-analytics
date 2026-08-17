@@ -206,7 +206,7 @@
       <button class="tab-btn" data-tab="history">История</button>
     </div>
     <div class="user-box">
-      <div class="as-of"><span id="asOfNote"></span><br><span id="gsStamp" style="color:#7d8496"></span></div>
+      <div class="as-of"><span id="asOfNote"></span><br><span id="gsStamp" style="color:#7d8496"></span><br><span id="cloudState" style="color:#7d8496"></span></div>
       <div class="user-chip" id="userChip">
         <span class="user-av" id="userAv">–</span>
         <span><b id="userName">–</b><br><span class="user-role" id="userRole">–</span></span>
@@ -492,8 +492,18 @@ var DB = {
   },
   set: function(key, val){
     var s = JSON.stringify(val);
-    try{ if(this.ok) localStorage.setItem(DB_PREFIX+key, s); else this.mem[key]=s; return true; }
-    catch(e){ console.warn('DB full', e); this.mem[key]=s; return false; }
+    var okw = true;
+    try{ if(this.ok) localStorage.setItem(DB_PREFIX+key, s); else this.mem[key]=s; }
+    catch(e){ console.warn('DB full', e); this.mem[key]=s; okw=false; }
+    /* зеркалим в общую базу Vercel */
+    try{
+      if(typeof CLOUD!=='undefined' && CLOUD.on!==false && CLOUD.keys.indexOf(key)>=0){
+        if(key==='history'||key==='logins') cloudPush(key, Array.isArray(val)? val.slice(0,200) : val);
+        else { this.mem[key+'_ts']=JSON.stringify(Date.now()); cloudPush(key, val);
+               try{ if(this.ok) localStorage.setItem(DB_PREFIX+key+'_ts', JSON.stringify(Date.now())); }catch(e2){} }
+      }
+    }catch(e3){}
+    return okw;
   },
   del: function(key){ try{ if(this.ok) localStorage.removeItem(DB_PREFIX+key); delete this.mem[key]; }catch(e){} }
 };
@@ -1413,6 +1423,88 @@ function gsQuality(recs){
   });
   return recs.length ? filled/(recs.length*6) : 0;
 }
+/* ================= ОБЩАЯ БАЗА (Vercel) ================= */
+var CLOUD = {on:null, keys:['users','history','logins','edits','newrows','snapshots','gs'],
+             journals:{history:HIST_CAP_REF(), logins:LOGIN_CAP_REF()}, pushing:{}, lastPull:0};
+function HIST_CAP_REF(){ return 3000; }
+function LOGIN_CAP_REF(){ return 2000; }
+
+function cloudSay(txt, color){
+  var el = document.getElementById('cloudState');
+  if(el) el.innerHTML = '<span style="color:'+(color||'var(--muted)')+'">'+esc(txt)+'</span>';
+}
+/* отправка значения на сервер (без ожидания) */
+function cloudPush(key, value){
+  if(CLOUD.on===false) return;
+  var body = (key==='history'||key==='logins')
+    ? {key:key, merge:value, cap:(key==='history'?HIST_CAP_REF():LOGIN_CAP_REF())}
+    : {key:key, value:value};
+  fetch('/api/db', {method:'POST', headers:{'Content-Type':'application/json'},
+                    body:JSON.stringify(body), cache:'no-store'})
+    .then(function(r){ if(r.status===501) CLOUD.on=false; else if(r.ok) CLOUD.on=true; })
+    .catch(function(){});
+}
+/* забрать состояние с сервера и слить с локальным */
+function cloudPull(){
+  return fetch('/api/db?keys='+CLOUD.keys.join(','), {cache:'no-store'})
+    .then(function(r){
+      if(r.status===501){ CLOUD.on=false; cloudSay('База не подключена — данные хранятся только в этом браузере.'); return null; }
+      if(!r.ok) throw new Error('ответ '+r.status);
+      return r.json();
+    })
+    .then(function(j){
+      if(!j || !j.ok) return null;
+      CLOUD.on = true;
+      var d = j.data || {}, touched = false;
+
+      /* журналы: сливаем в обе стороны по uid */
+      ['history','logins'].forEach(function(k){
+        var remote = (d[k] && Array.isArray(d[k].value)) ? d[k].value : [];
+        var local = DB.get(k, []);
+        var seen = {}, merged = [];
+        remote.concat(local).forEach(function(x){
+          if(!x) return;
+          var uid = x.uid || (String(x.ts||'')+'|'+(x.user||x.login||'')+'|'+(x.field||''));
+          if(seen[uid]) return;
+          seen[uid]=1; x.uid = uid; merged.push(x);
+        });
+        merged.sort(function(a,b){ return String(b.ts||'').localeCompare(String(a.ts||'')); });
+        var cap = (k==='history')?HIST_CAP_REF():LOGIN_CAP_REF();
+        merged = merged.slice(0, cap);
+        if(JSON.stringify(merged)!==JSON.stringify(local)){ DB.set(k, merged); touched = true; }
+        if(merged.length > remote.length) cloudPush(k, merged);   /* дослать наше на сервер */
+      });
+
+      /* остальное: свежая запись побеждает */
+      [['users',null],['edits',{}],['newrows',[]],['snapshots',[]],['gs',null]].forEach(function(pair){
+        var k = pair[0], remote = d[k];
+        if(!remote || remote.value===undefined || remote.value===null) return;
+        var localTs = DB.get(k+'_ts', 0);
+        if(remote.ts > localTs){
+          DB.set(k, remote.value); DB.set(k+'_ts', remote.ts); touched = true;
+        }
+      });
+
+      if(touched){
+        EDITS = DB.get('edits', {});
+        NEWROWS = DB.get('newrows', []);
+        applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
+      }
+      CLOUD.lastPull = Date.now();
+      cloudSay('База Vercel подключена · синхронизировано ' + nowStr(), 'var(--green)');
+      return d;
+    })
+    .catch(function(e){
+      if(CLOUD.on!==false) cloudSay('База недоступна: '+e.message+' — работаем локально.', 'var(--amber)');
+      return null;
+    });
+}
+function cloudStart(){
+  cloudPull();
+  setInterval(function(){ if(!document.hidden) cloudPull(); }, 45000);
+  document.addEventListener('visibilitychange', function(){ if(!document.hidden) cloudPull(); });
+}
+
 function gsSetStamp(cfg){
   var el = document.getElementById('gsStamp');
   if(el) el.textContent = (cfg && cfg.when) ? ('Данные из таблицы · ' + cfg.when) : '';
@@ -1826,6 +1918,7 @@ function startApp(user){
   } else { fc.value=''; fc.disabled = false; fc.title=''; }
   if(!DB.ok) console.warn('localStorage недоступен — история не сохранится между сессиями');
   renderAll();
+  try { cloudStart(); } catch(e){ console.error('cloud', e); }
   try { gsBoot(); } catch(e){ console.error('gsBoot', e); }
   var def = getUsers().find(function(u){ return u.login===user.login && u.isDefault; });
   if(def) setTimeout(function(){
