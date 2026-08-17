@@ -1436,7 +1436,7 @@ function cloudSay(txt, color){
   var el = document.getElementById('cloudState');
   if(el) el.innerHTML = '<span style="color:'+(color||'var(--muted)')+'">'+esc(txt)+'</span>';
 }
-function cloudOkSay(){ cloudSay('База Vercel подключена · синхронизировано ' + nowStr(), 'var(--green)'); }
+function cloudOkSay(){ cloudSay('MS Access / SQL — база подключена · синхронизировано ' + nowStr(), 'var(--green)'); }
 /* отправка значения на сервер (без ожидания) */
 function cloudPush(key, value, attempt){
   if(CLOUD.on===false) return;
@@ -1460,7 +1460,7 @@ function cloudPush(key, value, attempt){
 function cloudPull(){
   return fetch('/api/db?keys='+CLOUD.keys.join(','), {cache:'no-store'})
     .then(function(r){
-      if(r.status===501){ CLOUD.on=false; cloudSay('База не подключена — данные хранятся только в этом браузере.'); return null; }
+      if(r.status===501){ CLOUD.on=false; cloudSay('MS Access / SQL — база не подключена, данные только в этом браузере.'); return null; }
       if(!r.ok){ var e=new Error('ответ '+r.status); e.code=r.status; throw e; }
       return r.json();
     })
@@ -1512,11 +1512,11 @@ function cloudPull(){
       /* обрыв соединения — обычное дело, молча повторяем */
       if(cloudTransient(e.code) || CLOUD.fails<3){
         if(CLOUD.lastPull) cloudOkSay();      /* уже синхронизировались — не пугаем пользователя */
-        else cloudSay('Подключаюсь к базе…');
+        else cloudSay('MS Access / SQL — подключаюсь…');
         setTimeout(function(){ cloudPull(); }, 5000*CLOUD.fails);
         return null;
       }
-      cloudSay('База недоступна: '+e.message+' — работаем локально.', 'var(--amber)');
+      cloudSay('MS Access / SQL — база недоступна: '+e.message+', работаем локально.', 'var(--amber)');
       return null;
     });
 }
@@ -1649,7 +1649,7 @@ function gsFetchData(silent){
         if(!snap) return;
         if(sdSignature(snap.recs)===sdSignature(RAW)) return;
         RAW = snap.recs; applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
-        if(msg) msg.innerHTML='<span style="color:var(--amber)">Таблица недоступна — показаны данные из базы Vercel ('+
+        if(msg) msg.innerHTML='<span style="color:var(--amber)">Таблица недоступна — показаны данные из базы MS Access / SQL ('+
           fmt(snap.recs.length)+' строк).</span>';
       });
       if(msg){
