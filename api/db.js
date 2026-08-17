@@ -42,6 +42,18 @@ async function readKey(key) {
   try { return JSON.parse(raw); } catch { return null; }
 }
 
+async function readMany(keys) {
+  if (!keys.length) return {};
+  const raw = await redis(['MGET', ...keys.map(k => PREFIX + k)]);
+  const out = {};
+  keys.forEach((k, i) => {
+    const v = raw && raw[i];
+    if (!v) { out[k] = null; return; }
+    try { out[k] = JSON.parse(v); } catch { out[k] = null; }
+  });
+  return out;
+}
+
 async function writeKey(key, payload) {
   await redis(['SET', PREFIX + key, JSON.stringify(payload)]);
 }
@@ -61,8 +73,7 @@ module.exports = async (req, res) => {
     if (req.method === 'GET') {
       const list = String(req.query.keys || '').split(',').map(s => s.trim()).filter(Boolean);
       const keys = list.length ? list.filter(k => ALLOWED.includes(k)) : ALLOWED;
-      const out = {};
-      await Promise.all(keys.map(async k => { out[k] = await readKey(k); }));
+      const out = await readMany(keys);          // один запрос MGET вместо N штук
       return res.status(200).json({ ok: true, data: out, now: Date.now() });
     }
 
