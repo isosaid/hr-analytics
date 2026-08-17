@@ -1505,9 +1505,49 @@ function cloudStart(){
   document.addEventListener('visibilitychange', function(){ if(!document.hidden) cloudPull(); });
 }
 
+/* ---- зеркало данных таблицы в общей базе ---- */
+var SD_FIELDS = ['i','id','cat','pos','dept','companyRaw','open','close','days_close','hires',
+                 'interviews','closed_total','fio','note','status','team'];
+function sdPack(recs){
+  return {f:SD_FIELDS, r:recs.map(function(x){ return SD_FIELDS.map(function(k){ return x[k]===undefined?null:x[k]; }); })};
+}
+function sdUnpack(p){
+  if(!p) return null;
+  if(Array.isArray(p)) return p;                       /* старый формат */
+  if(!p.f || !Array.isArray(p.r)) return null;
+  return p.r.map(function(row){
+    var o={}; p.f.forEach(function(k,i){ o[k]=row[i]; }); return o;
+  });
+}
+function sdSignature(recs){ return recs.length + ':' + JSON.stringify(recs.slice(0,3)) + ':' + JSON.stringify(recs.slice(-3)); }
+function cloudPushSheet(recs){
+  if(CLOUD.on===false || !recs || !recs.length) return;
+  var sig = sdSignature(recs);
+  if(CLOUD.sdSig === sig) return;                      /* не изменилось — не гоняем впустую */
+  CLOUD.sdSig = sig;
+  fetch('/api/db', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({key:'sheetdata', value:sdPack(recs)}), cache:'no-store'})
+    .then(function(r){ if(r.ok) CLOUD.sdSaved = nowStr(); })
+    .catch(function(){});
+}
+/* если таблица недоступна — поднимаем последний снимок из общей базы */
+function cloudPullSheet(){
+  return fetch('/api/db?keys=sheetdata', {cache:'no-store'})
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(j){
+      if(!j || !j.ok || !j.data || !j.data.sheetdata) return null;
+      var recs = sdUnpack(j.data.sheetdata.value);
+      if(!recs || !recs.length) return null;
+      return {recs:recs, ts:j.data.sheetdata.ts};
+    })
+    .catch(function(){ return null; });
+}
+
 function gsSetStamp(cfg){
   var el = document.getElementById('gsStamp');
-  if(el) el.textContent = (cfg && cfg.when) ? ('Данные из таблицы · ' + cfg.when) : '';
+  if(el) el.textContent = (cfg && cfg.when)
+    ? ('Данные из таблицы · ' + cfg.when + (CLOUD.sdSaved ? ' · копия в базе' : ''))
+    : '';
 }
 /* silent=true — фоновое обновление: без вопросов и без рапорта об успехе */
 function gsFetchData(silent){
@@ -1565,6 +1605,7 @@ function gsFetchData(silent){
       DB.set('gs', cfg2);
       applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
       gsSetStamp(cfg2);
+      cloudPushSheet(recs);            /* копия данных в общей базе Vercel */
       if(!silent){
         logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
           fieldLabel:'Обновление из Google Sheets', before:was+' строк', after:recs.length+' строк'});
@@ -1580,6 +1621,14 @@ function gsFetchData(silent){
       return recs;
     })
     .catch(function(err){
+      /* таблица недоступна — пробуем последний снимок из общей базы */
+      cloudPullSheet().then(function(snap){
+        if(!snap) return;
+        if(sdSignature(snap.recs)===sdSignature(RAW)) return;
+        RAW = snap.recs; applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
+        if(msg) msg.innerHTML='<span style="color:var(--amber)">Таблица недоступна — показаны данные из базы Vercel ('+
+          fmt(snap.recs.length)+' строк).</span>';
+      });
       if(msg){
         msg.innerHTML = silent
           ? '<span style="color:var(--amber)">Автообновление не удалось: '+esc(err.message)+'.</span>'
