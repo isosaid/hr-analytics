@@ -1501,8 +1501,10 @@ function cloudPull(){
 }
 function cloudStart(){
   cloudPull();
-  setInterval(function(){ if(!document.hidden) cloudPull(); }, 45000);
-  document.addEventListener('visibilitychange', function(){ if(!document.hidden) cloudPull(); });
+  setInterval(function(){ if(!document.hidden) cloudPull(); }, 180000);   /* 3 мин — экономим запросы к базе */
+  document.addEventListener('visibilitychange', function(){
+    if(!document.hidden && Date.now()-CLOUD.lastPull > 20000) cloudPull();
+  });
 }
 
 /* ---- зеркало данных таблицы в общей базе ---- */
