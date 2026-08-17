@@ -606,17 +606,29 @@ function avg(a){ return a.length? a.reduce(function(x,y){return x+y;},0)/a.lengt
 function niceMax(v){ if(v<=0) return 10; var p=Math.pow(10,Math.floor(Math.log10(v)));
   var n=v/p, s = n<=1?1:n<=1.5?1.5:n<=2?2:n<=3?3:n<=5?5:n<=7.5?7.5:10; return s*p; }
 function truncate(s,n){ s=String(s); return s.length>n ? s.slice(0,n-1)+'…' : s; }
-function parseDate(s){ if(!s) return null; var p=String(s).trim();
-  var m = p.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+function parseDate(s){
+  if(s===null||s===undefined) return null;
+  var p=String(s).replace(/\u00a0/g,' ').trim();
+  if(!p) return null;
+  var m = p.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);            /* 2024-11-12 */
   if(m) return new Date(+m[1], +m[2]-1, +m[3]);
-  m = p.match(/^(\d{1,2})[.\/](\d{1,2})[.\/](\d{4})$/);
+  m = p.match(/^(\d{1,2})[.\/\-](\d{1,2})[.\/\-](\d{4})/);   /* 12.11.2024 / 12-11-2024 */
   if(m) return new Date(+m[3], +m[2]-1, +m[1]);
+  m = p.match(/^(\d{1,2})[.\/\-](\d{1,2})[.\/\-](\d{2})$/);  /* 12.11.24 */
+  if(m) return new Date(2000+ +m[3], +m[2]-1, +m[1]);
+  m = p.match(/^Date\((\d{4}),(\d{1,2}),(\d{1,2})/);          /* формат gviz: Date(2024,10,12) */
+  if(m) return new Date(+m[1], +m[2], +m[3]);
   return undefined; /* undefined = не распознано */ }
 function dateRu(s){ var d=parseDate(s); if(!d) return s||'';
   return String(d.getDate()).padStart(2,'0')+'.'+String(d.getMonth()+1).padStart(2,'0')+'.'+d.getFullYear(); }
 function daysBetween(a,b){ return Math.round((b-a)/86400000); }
-function toNum(v){ if(v===null||v===undefined||String(v).trim()==='') return null;
-  var n = parseFloat(String(v).replace(',','.').replace(/\s/g,'')); return isNaN(n)? NaN : n; }
+function toNum(v){
+  if(v===null||v===undefined) return null;
+  var t = String(v).replace(/\u00a0/g,'').replace(/\s/g,'').trim();
+  if(t==='') return null;
+  t = t.replace(/,/g,'.');
+  if(t.split('.').length>2) t = t.replace(/\.(?=.*\.)/g,'');   /* 1.234.5 -> 1234.5 */
+  var n = parseFloat(t); return isNaN(n)? NaN : n; }
 
 /* ---------- normalization of company names ---------- */
 var COMPANY_MAP = {
@@ -1295,7 +1307,7 @@ document.getElementById('nextPage').addEventListener('click', function(){ page++
 
 /* ---------- render: history / users / snapshots ---------- */
 /* ================= ОБНОВЛЕНИЕ ИЗ GOOGLE SHEETS ================= */
-var GS_DEFAULT = {id:'1T_FSVZLgwq-cU-dCvTiYGIK67hF5H5EfVMbd1B6rnd4', sheet:'Свод таблиц'};
+var GS_DEFAULT = {id:'1T_FSVZLgwq-cU-dCvTiYGIK67hF5H5EfVMbd1B6rnd4', sheet:'809885727'};
 
 function parseCSV(text){
   var rows=[], row=[], cur='', q=false;
@@ -1377,12 +1389,29 @@ function rowsToRecords(rows){
   if(!out.length) throw new Error('в таблице нет строк с данными');
   return out;
 }
-function gsUrl(id, sheet){
-  var base='https://docs.google.com/spreadsheets/d/'+encodeURIComponent(id)+'/gviz/tq?tqx=out:csv';
-  if(sheet) base += (/^\d+$/.test(String(sheet).trim())
-    ? '&gid='+encodeURIComponent(String(sheet).trim())
-    : '&sheet='+encodeURIComponent(sheet));
-  return base + '&_=' + Date.now();   /* обход кэша Google и браузера */
+function gsUrls(id, sheet){
+  var s = String(sheet||'').trim();
+  var isGid = /^\d+$/.test(s);
+  var t = '&_=' + Date.now();
+  var list = [];
+  /* 1) прямой экспорт листа — отдаёт значения ровно как в таблице, без угадывания типов */
+  if(isGid) list.push('https://docs.google.com/spreadsheets/d/'+encodeURIComponent(id)+'/export?format=csv&gid='+encodeURIComponent(s)+t);
+  else if(!s) list.push('https://docs.google.com/spreadsheets/d/'+encodeURIComponent(id)+'/export?format=csv'+t);
+  /* 2) gviz — запасной вариант, умеет искать лист по имени */
+  var g = 'https://docs.google.com/spreadsheets/d/'+encodeURIComponent(id)+'/gviz/tq?tqx=out:csv&headers=1';
+  if(s) g += isGid ? ('&gid='+encodeURIComponent(s)) : ('&sheet='+encodeURIComponent(s));
+  list.push(g+t);
+  return list;
+}
+/* насколько удачно разобрались числовые и датовые поля */
+function gsQuality(recs){
+  var filled = 0;
+  recs.forEach(function(r){
+    ['id','open','days_close','hires','interviews','closed_total'].forEach(function(f){
+      if(r[f]!==null && r[f]!==undefined && String(r[f]).trim()!=='') filled++;
+    });
+  });
+  return recs.length ? filled/(recs.length*6) : 0;
 }
 function gsSetStamp(cfg){
   var el = document.getElementById('gsStamp');
@@ -1410,11 +1439,32 @@ function gsFetchData(silent){
     if(msg) msg.innerHTML='<span style="color:var(--muted)">Загружаю таблицу…</span>';
   }
   var was = RAW.length;
-  return fetch(gsUrl(id, sh), {credentials:'omit', cache:'no-store'})
-    .then(function(r){ if(!r.ok) throw new Error('ответ сервера '+r.status); return r.text(); })
-    .then(function(txt){
-      if(/^\s*</.test(txt)) throw new Error('вместо данных пришла веб-страница — скорее всего к таблице нет доступа по ссылке');
-      var recs = rowsToRecords(parseCSV(txt));
+  var urls = gsUrls(id, sh);
+  var best = null, bestQ = -1, tried = [];
+  function attempt(k){
+    if(k >= urls.length){
+      if(!best) throw new Error(tried.join('; '));
+      return {recs:best, q:bestQ};
+    }
+    return fetch(urls[k], {credentials:'omit', cache:'no-store'})
+      .then(function(r){ if(!r.ok) throw new Error('ответ сервера '+r.status); return r.text(); })
+      .then(function(txt){
+        if(/^\s*</.test(txt)) throw new Error('вместо данных пришла веб-страница — нет доступа по ссылке');
+        var recs = rowsToRecords(parseCSV(txt));
+        var q = gsQuality(recs);
+        if(q > bestQ){ best = recs; bestQ = q; }
+        if(q >= 0.5) return {recs:recs, q:q};      /* данные разобраны нормально */
+        tried.push('способ '+(k+1)+': числа не читаются');
+        return attempt(k+1);
+      })
+      .catch(function(e){
+        tried.push('способ '+(k+1)+': '+e.message);
+        return attempt(k+1);
+      });
+  }
+  return attempt(0)
+    .then(function(res){
+      var recs = res.recs;
       var changed = JSON.stringify(recs)!==JSON.stringify(RAW);
       RAW = recs; EDITS = {}; NEWROWS = [];
       persistEdits(); persistNew();
@@ -1427,7 +1477,9 @@ function gsFetchData(silent){
         logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
           fieldLabel:'Обновление из Google Sheets', before:was+' строк', after:recs.length+' строк'});
         if(msg) msg.innerHTML='<span style="color:var(--green)">Готово: загружено '+fmt(recs.length)+' строк ('+
-          (recs.length-was>=0?'+':'')+fmt(recs.length-was)+' к прежним '+fmt(was)+'). Обновлено '+nowStr()+'.</span>';
+          (recs.length-was>=0?'+':'')+fmt(recs.length-was)+' к прежним '+fmt(was)+'). Обновлено '+nowStr()+'.</span>'+
+          (res.q < 0.5 ? '<br><span style="color:var(--amber)">Внимание: числа и даты прочитались лишь частично ('+
+            Math.round(res.q*100)+'%). Проверьте, что в листе один ряд заголовков и колонки не объединены.</span>' : '');
         renderHistory();
       } else if(msg){
         msg.innerHTML='<span style="color:var(--muted)">Автообновление '+nowStr()+' · '+fmt(recs.length)+' строк'+
