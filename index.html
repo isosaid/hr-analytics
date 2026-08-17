@@ -153,6 +153,12 @@
     color:var(--muted);display:block;margin-bottom:5px;}
   .login-inp{width:100%;padding:10px 12px;border:1.5px solid var(--line);border-radius:10px;
     font-size:14px;font-family:inherit;margin-bottom:14px;}
+  .pass-wrap{position:relative;}
+  .pass-wrap .login-inp{padding-right:44px;}
+  .eye-btn{position:absolute;right:6px;top:6px;width:32px;height:32px;border:none;background:transparent;
+    cursor:pointer;font-size:16px;line-height:1;opacity:.5;border-radius:8px;padding:0;}
+  .eye-btn:hover{opacity:1;background:#f2f4f9;}
+  .eye-btn.on{opacity:1;}
   .login-inp:focus{outline:none;border-color:var(--blue);}
   .login-btn{width:100%;padding:11px;font-size:14.5px;margin-top:4px;}
   .login-err{color:var(--red);font-size:12.5px;font-weight:600;min-height:18px;margin-bottom:4px;}
@@ -186,7 +192,10 @@
     <label class="login-lab">Логин</label>
     <input class="login-inp" id="loginUser" autocomplete="username" placeholder="HR-Analytics">
     <label class="login-lab">Пароль</label>
-    <input class="login-inp" id="loginPass" type="password" autocomplete="current-password" placeholder="••••••••">
+    <div class="pass-wrap">
+      <input class="login-inp" id="loginPass" type="password" autocomplete="current-password" placeholder="••••••••">
+      <button type="button" class="eye-btn" id="eyeBtn" title="Показать пароль" aria-label="Показать пароль">👁</button>
+    </div>
     <div class="login-err" id="loginErr"></div>
     <button class="btn primary login-btn" id="loginBtn">Войти</button>
   </div>
@@ -541,6 +550,20 @@ function describeBrowser(){
          : /Mac OS X/.test(ua)?'macOS' : /Linux/.test(ua)?'Linux' : 'ОС';
   return br + ' · ' + os;
 }
+function getRemoved(){
+  var r = DB.get('removed', []);
+  return Array.isArray(r) ? r.map(function(x){ return String(x).toLowerCase(); }) : [];
+}
+function markRemoved(login){
+  var r = getRemoved();
+  var l = String(login).toLowerCase();
+  if(r.indexOf(l)<0){ r.push(l); DB.set('removed', r); }
+}
+function unmarkRemoved(login){
+  var l = String(login).toLowerCase();
+  var r = getRemoved().filter(function(x){ return x!==l; });
+  DB.set('removed', r);
+}
 function getUsers(){
   var u = DB.get('users', null);
   var changed = false;
@@ -549,11 +572,12 @@ function getUsers(){
           created:new Date().toISOString(), isDefault:true}];
     changed = true;
   }
-  /* дозаводим аккаунты компаний, если база осталась от прежней версии файла */
-  var have = {};
+  /* дозаводим аккаунты компаний, кроме тех, что удалили вручную */
+  var have = {}, gone = getRemoved();
   u.forEach(function(x){ have[String(x.login).toLowerCase()] = true; });
   COMPANY_ACCOUNTS.forEach(function(c){
-    if(have[c.login.toLowerCase()]) return;
+    var key = c.login.toLowerCase();
+    if(have[key] || gone.indexOf(key)>=0) return;
     var role = c.role || 'company';
     var rec = {login:c.login, hash:hashPass(c.pass), role:role,
                initPass:c.pass, created:new Date().toISOString(), isDefault:true};
@@ -1424,7 +1448,7 @@ function gsQuality(recs){
   return recs.length ? filled/(recs.length*6) : 0;
 }
 /* ================= ОБЩАЯ БАЗА (Vercel) ================= */
-var CLOUD = {on:null, keys:['users','history','logins','edits','newrows','snapshots','gs'],
+var CLOUD = {on:null, keys:['users','history','logins','edits','newrows','snapshots','gs','removed'],
              journals:{history:HIST_CAP_REF(), logins:LOGIN_CAP_REF()}, pushing:{}, lastPull:0};
 function HIST_CAP_REF(){ return 3000; }
 function LOGIN_CAP_REF(){ return 2000; }
@@ -1493,7 +1517,7 @@ function cloudPull(){
       });
 
       /* остальное: свежая запись побеждает */
-      [['users',null],['edits',{}],['newrows',[]],['snapshots',[]],['gs',null]].forEach(function(pair){
+      [['users',null],['edits',{}],['newrows',[]],['snapshots',[]],['gs',null],['removed',[]]].forEach(function(pair){
         var k = pair[0], remote = d[k];
         if(!remote || remote.value===undefined || remote.value===null) return;
         var localTs = DB.get(k+'_ts', 0);
@@ -1769,7 +1793,7 @@ function renderHistory(){
       '<td>'+roleName+(u.initPass?'<br><span style="font-size:11px;color:var(--muted)">пароль: <b>'+esc(u.initPass)+'</b></span>':'')+'</td>'+
       '<td class="when">'+esc(u.created? dateRu(u.created.slice(0,10)) : '')+'</td>'+
       '<td>'+((users.length>1 && SESSION && u.login!==SESSION.login)
-        ? '<button class="btn" data-deluser="'+idx+'" style="padding:3px 9px;font-size:11.5px">Удалить</button>':'')+'</td></tr>';
+        ? '<button class="btn" data-deluser="1" data-login="'+esc(u.login)+'" style="padding:3px 9px;font-size:11.5px">Удалить</button>':'')+'</td></tr>';
   }).join('');
   renderLogins();
 }
@@ -1905,7 +1929,7 @@ document.getElementById('addUserBtn').addEventListener('click', function(){
   if(users.some(function(u){return u.login.toLowerCase()===l.toLowerCase();})){
     msg.innerHTML='<span style="color:var(--red)">Такой логин уже есть.</span>'; return; }
   users.push({login:l, hash:hashPass(p), role:role, created:new Date().toISOString()});
-  saveUsers(users);
+  saveUsers(users); unmarkRemoved(l);
   document.getElementById('newUserLogin').value=''; document.getElementById('newUserPass').value='';
   msg.innerHTML='<span style="color:var(--green)">Пользователь «'+esc(l)+'» добавлен.</span>';
   renderHistory();
@@ -1926,12 +1950,22 @@ document.getElementById('expUsersBtn').addEventListener('click', function(){
   setTimeout(function(){ URL.revokeObjectURL(a.href); },1000);
 });
 
-document.getElementById('usersBody').addEventListener('click', function(e){
+document.getElementById('usersBody').addEventListener('mousedown', function(e){
   var b = e.target.closest && e.target.closest('button[data-deluser]');
   if(!b || !isAdmin()) return;
-  var users = getUsers(), u = users[+b.dataset.deluser];
-  if(!u || !confirm('Удалить пользователя «'+u.login+'»?')) return;
-  users.splice(+b.dataset.deluser,1); saveUsers(users); renderHistory();
+  e.preventDefault();
+  var login = b.getAttribute('data-login');
+  var users = getUsers();
+  var idx = users.findIndex(function(x){ return String(x.login).toLowerCase()===String(login).toLowerCase(); });
+  if(idx<0) return;
+  var u = users[idx];
+  if(!confirm('Удалить пользователя «'+u.login+'»?')) return;
+  users.splice(idx,1);
+  saveUsers(users);
+  markRemoved(u.login);              /* чтобы не появился снова при обновлении */
+  logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
+    fieldLabel:'Удаление пользователя', before:u.login, after:'—'});
+  renderHistory();
 });
 document.getElementById('chgPassBtn').addEventListener('click', function(){
   var msg = document.getElementById('userMsg');
@@ -2016,6 +2050,15 @@ function tryLogin(){
   err.textContent=''; document.getElementById('loginPass').value='';
   startApp(u);
 }
+document.getElementById('eyeBtn').addEventListener('click', function(){
+  var inp = document.getElementById('loginPass');
+  var show = inp.type === 'password';
+  inp.type = show ? 'text' : 'password';
+  this.classList.toggle('on', show);
+  this.textContent = show ? '🙈' : '👁';
+  this.title = show ? 'Скрыть пароль' : 'Показать пароль';
+  inp.focus();
+});
 document.getElementById('loginBtn').addEventListener('click', tryLogin);
 ['loginUser','loginPass'].forEach(function(id){
   document.getElementById(id).addEventListener('keydown', function(e){ if(e.key==='Enter') tryLogin(); });
@@ -2031,7 +2074,7 @@ document.getElementById('resetAuthBtn').addEventListener('click', function(){
   if(!isAdmin()) return;
   if(!confirm('Сбросить все учётные записи к заводским?\n'+
               'Журнал изменений, журнал входов и внесённые правки сохранятся.')) return;
-  DB.del('users'); getUsers();
+  DB.del('users'); DB.set('removed', []); getUsers();
   document.getElementById('userMsg').innerHTML =
     '<span style="color:var(--green)">Учётные записи восстановлены к заводским.</span>';
   renderHistory();
