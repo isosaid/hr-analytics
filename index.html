@@ -389,13 +389,14 @@
       <div class="card">
         <h3>Журнал входов</h3>
         <div class="card-sub">Кто и когда заходил, с какого устройства и браузера.
-          Записи с другого компьютера попадают сюда только после импорта — кнопки ниже.</div>
+          При подключённой базе входы со всех компьютеров попадают сюда автоматически.</div>
         <div class="editor-toolbar">
           <input type="text" id="loginSearch" placeholder="Поиск по пользователю, компании, устройству…">
           <button class="btn" id="expLogBtn">↓ Выгрузить журналы</button>
           <button class="btn" id="impLogBtn">↑ Загрузить журнал с другого ПК</button>
           <input type="file" id="impLogFile" accept="application/json" style="display:none">
           <button class="btn" id="clearLoginBtn">Очистить</button>
+          <button class="btn primary" id="dbTestBtn">⚙ Проверить связь с базой</button>
         </div>
         <div id="impMsg" style="font-size:12.5px;margin-bottom:8px;min-height:16px"></div>
         <div class="scroll-box" style="max-height:360px"><table class="dt">
@@ -507,7 +508,7 @@ var DB = {
     /* зеркалим в общую базу Vercel */
     try{
       if(typeof CLOUD!=='undefined' && CLOUD.on!==false && CLOUD.keys.indexOf(key)>=0){
-        if(key==='history'||key==='logins') cloudPush(key, Array.isArray(val)? val.slice(0,200) : val);
+        if(key==='history'||key==='logins') cloudPush(key, Array.isArray(val)? val.slice(0,500) : val);
         else { this.mem[key+'_ts']=JSON.stringify(Date.now()); cloudPush(key, val);
                try{ if(this.ok) localStorage.setItem(DB_PREFIX+key+'_ts', JSON.stringify(Date.now())); }catch(e2){} }
       }
@@ -1469,7 +1470,7 @@ function cloudPush(key, value, attempt){
     ? {key:key, merge:value, cap:(key==='history'?HIST_CAP_REF():LOGIN_CAP_REF())}
     : {key:key, value:value};
   fetch('/api/db', {method:'POST', headers:{'Content-Type':'application/json'},
-                    body:JSON.stringify(body), cache:'no-store', keepalive:(key!=='sheetdata')})
+                    body:JSON.stringify(body), cache:'no-store'})
     .then(function(r){
       if(r.status===501){ CLOUD.on=false; return; }
       if(r.ok){ CLOUD.on=true; CLOUD.fails=0; return; }
@@ -1798,6 +1799,39 @@ function renderHistory(){
   renderLogins();
 }
 
+document.getElementById('dbTestBtn').addEventListener('click', function(){
+  var msg = document.getElementById('impMsg');
+  msg.innerHTML = '<span style="color:var(--muted)">Проверяю…</span>';
+  var t0 = Date.now();
+  fetch('/api/db?keys='+CLOUD.keys.join(','), {cache:'no-store'})
+    .then(function(r){
+      return r.text().then(function(txt){ return {status:r.status, txt:txt}; });
+    })
+    .then(function(res){
+      var ms = Date.now()-t0, info;
+      try{
+        var j = JSON.parse(res.txt);
+        if(j.ok){
+          var counts = Object.keys(j.data||{}).map(function(k){
+            var v=j.data[k] && j.data[k].value;
+            return k+': '+(v==null?'пусто':(Array.isArray(v)?v.length+' зап.':'есть'));
+          }).join(' · ');
+          info = '<span style="color:var(--green)">Связь есть ('+res.status+', '+ms+' мс). В базе — '+esc(counts)+'</span>';
+          CLOUD.on = true; CLOUD.fails = 0;
+          cloudPull().then(function(){ renderAll(); });
+        } else {
+          info = '<span style="color:var(--red)">Сервер ответил '+res.status+': '+esc(j.reason||j.hint||res.txt.slice(0,200))+'</span>';
+        }
+      }catch(e){
+        info = '<span style="color:var(--red)">Ответ '+res.status+', не JSON: '+esc(res.txt.slice(0,200))+'</span>';
+      }
+      msg.innerHTML = info;
+    })
+    .catch(function(e){
+      msg.innerHTML = '<span style="color:var(--red)">Запрос не прошёл: '+esc(e.message)+
+        '</span><br><span style="color:var(--muted)">Проверьте /api/db?diag=1 в адресной строке.</span>';
+    });
+});
 document.getElementById('loginSearch').addEventListener('input', renderLogins);
 document.getElementById('clearLoginBtn').addEventListener('click', function(){
   if(!isAdmin()){ alert('Очистка журнала доступна администратору.'); return; }
