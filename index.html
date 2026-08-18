@@ -1449,7 +1449,8 @@ function gsQuality(recs){
   return recs.length ? filled/(recs.length*6) : 0;
 }
 /* ================= ОБЩАЯ БАЗА (Vercel) ================= */
-var CLOUD = {on:null, keys:['users','history','logins','edits','newrows','snapshots','gs','removed'],
+var API_PATHS = ['/api/db','/api/store','/api/sync'];
+var CLOUD = {on:null, base:null, keys:['users','history','logins','edits','newrows','snapshots','gs','removed'],
              journals:{history:HIST_CAP_REF(), logins:LOGIN_CAP_REF()}, pushing:{}, lastPull:0};
 function HIST_CAP_REF(){ return 3000; }
 function LOGIN_CAP_REF(){ return 2000; }
@@ -1457,6 +1458,16 @@ function LOGIN_CAP_REF(){ return 2000; }
 /* коды, при которых запрос стоит просто повторить, а не объявлять базу недоступной */
 function cloudTransient(code){ return code===499 || code===408 || code===425 || code===429 ||
                                       code===502 || code===503 || code===504; }
+function apiBase(){ return CLOUD.base || DB.get('apibase', null) || API_PATHS[0]; }
+function apiSetBase(p){ CLOUD.base = p; try{ DB.set('apibase', p); }catch(e){} }
+/* антивирус подменяет ответ своей HTML-страницей */
+function blockedByAV(text){
+  if(!text) return null;
+  var t = String(text).slice(0, 800);
+  if(!/^\s*<(!doctype|html)/i.test(t)) return null;
+  var m = t.match(/<title>([^<]{0,80})<\/title>/i);
+  return (m && m[1].trim()) || 'программа защиты';
+}
 function cloudSay(txt, color){
   var el = document.getElementById('cloudState');
   if(el) el.innerHTML = '<span style="color:'+(color||'var(--muted)')+'">'+esc(txt)+'</span>';
@@ -1469,7 +1480,7 @@ function cloudPush(key, value, attempt){
   var body = (key==='history'||key==='logins')
     ? {key:key, merge:value, cap:(key==='history'?HIST_CAP_REF():LOGIN_CAP_REF())}
     : {key:key, value:value};
-  fetch('/api/db', {method:'POST', headers:{'Content-Type':'application/json'},
+  fetch(apiBase(), {method:'POST', headers:{'Content-Type':'application/json'},
                     body:JSON.stringify(body), cache:'no-store'})
     .then(function(r){
       if(r.status===501){ CLOUD.on=false; return; }
@@ -1482,17 +1493,30 @@ function cloudPush(key, value, attempt){
     });
 }
 /* забрать состояние с сервера и слить с локальным */
-function cloudPull(){
-  return fetch('/api/db?keys='+CLOUD.keys.join(','), {cache:'no-store'})
+function cloudPull(pathIdx){
+  var paths = API_PATHS.slice();
+  var start = (pathIdx!==undefined) ? pathIdx : paths.indexOf(apiBase());
+  if(start < 0) start = 0;
+  var path = paths[start] || paths[0];
+  return fetch(path+'?keys='+CLOUD.keys.join(','), {cache:'no-store'})
     .then(function(r){
       if(r.status===501){ CLOUD.on=false; cloudSay('MS Access / SQL — база не подключена, данные только в этом браузере.'); return null; }
-      if(!r.ok){
-        return r.text().then(function(t){
+      return r.text().then(function(t){
+        var av = blockedByAV(t);
+        if(av || r.status===499){
+          /* пробуем следующий адрес — вдруг он не в списке блокировки */
+          if(start+1 < paths.length) return cloudPull(start+1).then(function(){ return null; });
+          var e=new Error('запрос блокирует «'+(av||'антивирус')+'»'); e.code='av'; e.av=true; throw e;
+        }
+        if(!r.ok){
           var why=''; try{ var j=JSON.parse(t); why = j.reason||j.hint||''; }catch(e2){}
-          var e=new Error('ответ '+r.status+(why?' · '+why:'')); e.code=r.status; throw e;
-        });
-      }
-      return r.json();
+          var e2b=new Error('ответ '+r.status+(why?' · '+why:'')); e2b.code=r.status; throw e2b;
+        }
+        var parsed; try{ parsed = JSON.parse(t); }
+        catch(e3){ var e4=new Error('ответ не JSON'); e4.code=r.status; throw e4; }
+        if(parsed && parsed.ok) apiSetBase(path);
+        return parsed;
+      });
     })
     .then(function(j){
       if(j===null) return null;                       /* 501 — база не подключена */
@@ -1546,6 +1570,11 @@ function cloudPull(){
       if(CLOUD.on===false) return null;
       CLOUD.fails = (CLOUD.fails||0) + 1;
       /* обрыв соединения — обычное дело, молча повторяем */
+      if(e.av){
+        cloudSay('MS Access / SQL — соединение с базой блокирует «'+e.message.replace(/^.*«|».*$/g,'')+
+          '». Добавьте сайт в исключения антивируса.', 'var(--red)');
+        return null;
+      }
       if(CLOUD.fails<6){
         if(CLOUD.lastPull) cloudOkSay();      /* уже синхронизировались — не пугаем пользователя */
         else cloudSay('MS Access / SQL — попытка '+CLOUD.fails+': '+e.message, 'var(--amber)');
@@ -1584,14 +1613,14 @@ function cloudPushSheet(recs){
   var sig = sdSignature(recs);
   if(CLOUD.sdSig === sig) return;                      /* не изменилось — не гоняем впустую */
   CLOUD.sdSig = sig;
-  fetch('/api/db', {method:'POST', headers:{'Content-Type':'application/json'},
+  fetch(apiBase(), {method:'POST', headers:{'Content-Type':'application/json'},
     body:JSON.stringify({key:'sheetdata', value:sdPack(recs)}), cache:'no-store'})
     .then(function(r){ if(r.ok) CLOUD.sdSaved = nowStr(); })
     .catch(function(){});
 }
 /* если таблица недоступна — поднимаем последний снимок из общей базы */
 function cloudPullSheet(){
-  return fetch('/api/db?keys=sheetdata', {cache:'no-store'})
+  return fetch(apiBase()+'?keys=sheetdata', {cache:'no-store'})
     .then(function(r){ return r.ok ? r.json() : null; })
     .then(function(j){
       if(!j || !j.ok || !j.data || !j.data.sheetdata) return null;
@@ -1809,7 +1838,7 @@ document.getElementById('dbTestBtn').addEventListener('click', function(){
   var msg = document.getElementById('impMsg');
   msg.innerHTML = '<span style="color:var(--muted)">Проверяю…</span>';
   var t0 = Date.now();
-  fetch('/api/db?keys='+CLOUD.keys.join(','), {cache:'no-store'})
+  fetch(apiBase()+'?keys='+CLOUD.keys.join(','), {cache:'no-store'})
     .then(function(r){
       return r.text().then(function(txt){ return {status:r.status, txt:txt}; });
     })
@@ -1829,7 +1858,11 @@ document.getElementById('dbTestBtn').addEventListener('click', function(){
           info = '<span style="color:var(--red)">Сервер ответил '+res.status+': '+esc(j.reason||j.hint||res.txt.slice(0,200))+'</span>';
         }
       }catch(e){
-        info = '<span style="color:var(--red)">Ответ '+res.status+', не JSON: '+esc(res.txt.slice(0,200))+'</span>';
+        var av = blockedByAV(res.txt);
+        info = av
+          ? '<span style="color:var(--red)">Запрос перехватывает «'+esc(av)+'» (ответ '+res.status+').</span>'+
+            '<br><span style="color:var(--muted)">Добавьте адрес сайта в исключения антивируса: настройки → Сеть / Веб-Антивирус → Доверенные адреса.</span>'
+          : '<span style="color:var(--red)">Ответ '+res.status+', не JSON: '+esc(res.txt.slice(0,200))+'</span>';
       }
       msg.innerHTML = info;
     })
