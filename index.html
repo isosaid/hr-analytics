@@ -1495,7 +1495,11 @@ function cloudPull(){
       return r.json();
     })
     .then(function(j){
-      if(!j || !j.ok) return null;
+      if(j===null) return null;                       /* 501 — база не подключена */
+      if(!j || !j.ok){
+        var e2=new Error(j && (j.reason||j.hint) ? String(j.reason||j.hint) : 'пустой ответ сервера');
+        e2.code=200; throw e2;
+      }
       CLOUD.on = true;
       var d = j.data || {}, touched = false;
 
@@ -1528,9 +1532,11 @@ function cloudPull(){
       });
 
       if(touched){
-        EDITS = DB.get('edits', {});
-        NEWROWS = DB.get('newrows', []);
-        applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
+        try{
+          EDITS = DB.get('edits', {});
+          NEWROWS = DB.get('newrows', []);
+          applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
+        }catch(err){ console.error('merge', err); }
       }
       CLOUD.lastPull = Date.now(); CLOUD.fails = 0;
       cloudOkSay();
@@ -1540,13 +1546,13 @@ function cloudPull(){
       if(CLOUD.on===false) return null;
       CLOUD.fails = (CLOUD.fails||0) + 1;
       /* обрыв соединения — обычное дело, молча повторяем */
-      if(cloudTransient(e.code) || CLOUD.fails<3){
+      if(CLOUD.fails<6){
         if(CLOUD.lastPull) cloudOkSay();      /* уже синхронизировались — не пугаем пользователя */
-        else cloudSay('MS Access / SQL — подключаюсь…');
-        setTimeout(function(){ cloudPull(); }, 5000*CLOUD.fails);
+        else cloudSay('MS Access / SQL — попытка '+CLOUD.fails+': '+e.message, 'var(--amber)');
+        setTimeout(function(){ cloudPull(); }, Math.min(5000*CLOUD.fails, 30000));
         return null;
       }
-      cloudSay('MS Access / SQL — база недоступна: '+e.message+'. Проверка: /api/db?diag=1', 'var(--amber)');
+      cloudSay('MS Access / SQL — база недоступна: '+e.message+'. Нажмите «Проверить связь с базой» во вкладке История.', 'var(--red)');
       return null;
     });
 }
