@@ -89,7 +89,14 @@
     font-size:13px;margin-bottom:10px;font-family:inherit;}
   .search-box:focus{outline:none;border-color:var(--blue);}
   .empty-note{padding:26px 10px;text-align:center;color:var(--muted);font-size:13px;}
-  footer{padding:16px 26px 36px;text-align:center;color:var(--muted);font-size:11.5px;}
+  footer{padding:26px 26px 44px;text-align:center;color:var(--muted);font-size:11.5px;line-height:1.7;
+    border-top:1px solid var(--line);margin-top:10px;background:linear-gradient(180deg,transparent,#eceef4);}
+  .foot-brand{font-weight:800;font-size:13px;color:#3d4453;letter-spacing:-.01em;}
+  .foot-line{font-size:11.5px;}
+  .foot-made{margin-top:8px;font-size:12px;color:#4b5563;}
+  .foot-made b{color:var(--blue);}
+  .foot-meta{margin-top:6px;font-size:11px;color:#9aa1ad;}
+  .foot-dot{margin:0 7px;opacity:.6;}
 
   /* ===== pivot / editor tab ===== */
   .issue-chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;}
@@ -475,7 +482,20 @@
     </section>
   </main>
 
-  <footer>Источник: выгрузка «Отчет.xlsx» · 2 010 заявок на подбор · дата актуальности данных о поиске 07.08.2026</footer>
+  <footer>
+    <div class="foot-brand">HR&#8209;Analytics · платформа аналитики подбора персонала</div>
+    <div class="foot-line" id="footData">—</div>
+    <div class="foot-made">
+      Разработано <b>Отделом автоматизации</b> холдинга ООО «Авесто Групп» · <b>И.&nbsp;Саидов</b>
+    </div>
+    <div class="foot-meta">
+      <span id="footVer">версия 1.0</span>
+      <span class="foot-dot">•</span>
+      <span id="footStore">хранилище: локальное</span>
+      <span class="foot-dot">•</span>
+      <span id="footYear">© 2026</span>
+    </div>
+  </footer>
 </div>
 
 <script>
@@ -2052,6 +2072,19 @@ document.getElementById('chgPassBtn').addEventListener('click', function(){
 });
 
 /* ---------- orchestration ---------- */
+function renderFooter(){
+  var cfg = DB.get('gs', null);
+  var f1 = document.getElementById('footData');
+  if(f1){
+    f1.textContent = 'Источник данных: ' + (cfg && cfg.when ? 'Google Sheets «Отчет по рекрутингу»' : 'встроенная выгрузка')
+      + ' · ' + fmt(ROWS.length) + ' заявок на подбор'
+      + (cfg && cfg.when ? ' · обновлено ' + cfg.when : '');
+  }
+  var f2 = document.getElementById('footStore');
+  if(f2) f2.textContent = 'хранилище: ' + (CLOUD.on===true ? 'MS Access / SQL' : 'локальное');
+  var f3 = document.getElementById('footYear');
+  if(f3) f3.textContent = '© ' + new Date().getFullYear();
+}
 function renderAll(){
   var rows = applyFilters();
   document.getElementById('rowCountTag').textContent = fmt(rows.length)+' заявок';
@@ -2060,6 +2093,7 @@ function renderAll(){
   try { renderPivot(); } catch(e){ console.error('pivot', e); }
   try { renderHistory(); } catch(e){ console.error('history', e); }
   try { initGS(); } catch(e){ console.error('gs', e); }
+  try { renderFooter(); } catch(e){ console.error('footer', e); }
 }
 document.querySelectorAll('.tab-btn').forEach(function(btn){
   btn.addEventListener('click', function(){
