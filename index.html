@@ -91,6 +91,8 @@
   .empty-note{padding:26px 10px;text-align:center;color:var(--muted);font-size:13px;}
   footer{padding:26px 26px 44px;text-align:center;color:var(--muted);font-size:11.5px;line-height:1.7;
     border-top:1px solid var(--line);margin-top:10px;background:linear-gradient(180deg,transparent,#eceef4);}
+  .note-strip{background:var(--blue-soft);border:1px solid #cfd8ff;color:#31408f;border-radius:10px;
+    padding:9px 14px;font-size:12px;margin-bottom:14px;line-height:1.5;}
   .foot-brand{font-weight:800;font-size:13px;color:#3d4453;letter-spacing:-.01em;}
   .foot-line{font-size:11.5px;}
   .foot-made{margin-top:8px;font-size:12px;color:#4b5563;}
@@ -324,6 +326,9 @@
 
     <!-- ============ ПОДРОБНЫЙ ============ -->
     <section class="view" id="view-detail">
+      <div class="note-strip" id="detailNote">Показатели этой вкладки считаются по своим наборам: сроки закрытия —
+        по закрытым вакансиям, сроки поиска и просрочка — по открытым. Фильтр «Статус» здесь не применяется,
+        остальные фильтры работают.</div>
       <div class="kpi-row">
         <div class="kpi blue"><div class="bar-accent"></div><div class="lab">В среднем закрытие позиции занимает</div>
           <div class="val"><span id="kpiAvgDays">–</span> <span style="font-size:18px;color:var(--muted)">дней</span></div>
@@ -899,10 +904,11 @@ fillSelect('f-cat', CAT_ORDER.filter(function(c){ return ROWS.some(function(r){r
 fillSelect('f-month', MONTHS.filter(function(m){ return ROWS.some(function(r){return r._month===m;}); }));
 refreshFilterOptions();
 
-function applyFilters(){
+function applyFilters(opts){
   var co=document.getElementById('f-company').value, ca=document.getElementById('f-cat').value,
       yr=document.getElementById('f-year').value, mo=document.getElementById('f-month').value,
       st=document.getElementById('f-status').value;
+  var skipStatus = !!(opts && opts.ignoreStatus);
   var scope = isCompanyUser() ? SESSION.company : null;
   return ROWS.filter(function(r){
     if(scope && r._company!==scope) return false;
@@ -910,7 +916,7 @@ function applyFilters(){
     if(ca && r.cat!==ca) return false;
     if(yr && String(r._year)!==yr) return false;
     if(mo && r._month!==mo) return false;
-    if(st && r.status!==st) return false;
+    if(!skipStatus && st && r.status!==st) return false;
     return true;
   });
 }
@@ -2167,7 +2173,8 @@ function renderAll(){
   var rows = applyFilters();
   document.getElementById('rowCountTag').textContent = fmt(rows.length)+' заявок';
   try { renderGeneral(rows); } catch(e){ console.error('general', e); }
-  try { renderDetail(rows); } catch(e){ console.error('detail', e); }
+  /* блоки этой вкладки сами делятся на закрытые и открытые — фильтр статуса их только обнуляет */
+  try { renderDetail(applyFilters({ignoreStatus:true})); } catch(e){ console.error('detail', e); }
   try { renderPivot(); } catch(e){ console.error('pivot', e); }
   try { renderHistory(); } catch(e){ console.error('history', e); }
   try { initGS(); } catch(e){ console.error('gs', e); }
