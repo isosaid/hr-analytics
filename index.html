@@ -481,6 +481,21 @@
             <div id="gsMsg" style="font-size:12.5px;min-height:18px;line-height:1.5"></div>
           </div>
 
+          <div class="card" id="reconCard">
+            <h3>Сверка с Google-таблицей</h3>
+            <div class="card-sub">Сколько строк дашборд насчитал по каждому подразделению — сравните с таблицей.</div>
+            <div class="editor-toolbar">
+              <input type="text" id="reconSearch" placeholder="Поиск подразделения…">
+              <button class="btn" id="reconCopy">Скопировать список</button>
+            </div>
+            <div id="reconMsg" style="font-size:12px;color:var(--muted);margin-bottom:8px"></div>
+            <div class="scroll-box" style="max-height:300px"><table class="dt">
+              <thead><tr><th>Подразделение</th><th style="text-align:right">Всего</th>
+                <th style="text-align:right">Закрыто</th><th style="text-align:right">В работе</th>
+                <th>Варианты написания в таблице</th></tr></thead>
+              <tbody id="reconBody"></tbody></table></div>
+          </div>
+
           <div class="card" id="usersCard">
             <h3>Пользователи</h3>
             <div class="card-sub">Роль «Администратор» может править данные и управлять доступом, «Наблюдатель» — только смотреть.</div>
@@ -730,6 +745,43 @@ var COMPANY_MAP = {
  'Проект Барки Точик':'Барки Точик (проект)','Барки Точик (проект)':'Барки Точик (проект)'
 };
 function normCompany(x){ if(!x) return 'Не указано'; x=String(x).trim(); return COMPANY_MAP[x]||x; }
+/* ключ компании: без кавычек, правовой формы, регистра и лишних пробелов —
+   чтобы «Арвис» и «ООО "Арвис"» считались одной организацией */
+function companyKey(x){
+  x = String(x||'').toLowerCase();
+  x = x.replace(/[«»""„“”'`]/g,'"');
+  x = x.replace(/^\s*(ооо|оао|зао|тсрц|пп|гп|ип|чп)\s*/,'');
+  x = x.replace(/[^a-zа-яё0-9]+/g,' ').trim();
+  return x;
+}
+/* из всех вариантов написания выбираем самый полный как отображаемый */
+var COMPANY_CANON = {};
+function buildCompanyRegistry(rows){
+  var byKey = {};
+  rows.forEach(function(r){
+    var name = normCompany(r.companyRaw);
+    var k = companyKey(name);
+    if(!k) return;
+    var e = byKey[k] || (byKey[k] = {});
+    e[name] = (e[name]||0) + 1;
+  });
+  COMPANY_CANON = {};
+  Object.keys(byKey).forEach(function(k){
+    var variants = Object.keys(byKey[k]);
+    variants.sort(function(a,b){
+      var qa = /"/.test(a)?1:0, qb = /"/.test(b)?1:0;      /* с правовой формой и кавычками — предпочтительнее */
+      if(qa!==qb) return qb-qa;
+      if(a.length!==b.length) return b.length-a.length;      /* затем более полное написание */
+      return byKey[k][b]-byKey[k][a];
+    });
+    COMPANY_CANON[k] = variants[0];
+  });
+}
+function canonCompany(x){
+  var name = normCompany(x);
+  var k = companyKey(name);
+  return (k && COMPANY_CANON[k]) ? COMPANY_CANON[k] : name;
+}
 
 /* ---------- validation rules ---------- */
 var RULES = [
@@ -845,7 +897,7 @@ applyEdits();
 function derive(r, manualDays){
   var o = parseDate(r.open), c = parseDate(r.close);
   var d = {};
-  d.company = normCompany(r.companyRaw);
+  d.company = canonCompany(r.companyRaw);
   d.year  = o ? o.getFullYear() : null;
   d.month = o ? MONTHS[o.getMonth()] : null;
   var dc = toNum(r.days_close);
@@ -872,6 +924,7 @@ function derive(r, manualDays){
   return d;
 }
 function rebuild(){
+  buildCompanyRegistry(ROWS);
   ROWS.forEach(function(r){
     var manual = EDITS.hasOwnProperty(r.i+':days_close') ||
                  (isNewRow(r.i) && r.days_close!==null && r.days_close!==undefined && String(r.days_close)!=='');
@@ -1915,6 +1968,31 @@ function renderLogins(){
     : '<tr><td colspan="6" class="empty-note">Записей о входах пока нет</td></tr>';
 }
 
+function renderRecon(){
+  var body = document.getElementById('reconBody');
+  if(!body) return;
+  var q = (document.getElementById('reconSearch').value||'').toLowerCase();
+  var agg = {};
+  ROWS.forEach(function(r){
+    var a = agg[r._company] || (agg[r._company] = {total:0, closed:0, active:0, raw:{}});
+    a.total++;
+    if(r.status===STATUS_CLOSED) a.closed++;
+    if(r._openActive) a.active++;
+    var rw = (r.companyRaw||'—');
+    a.raw[rw] = (a.raw[rw]||0)+1;
+  });
+  var names = Object.keys(agg).sort(function(a,b){ return agg[b].total-agg[a].total; })
+    .filter(function(n){ return !q || n.toLowerCase().indexOf(q)>=0; });
+  document.getElementById('reconMsg').textContent =
+    'Подразделений: '+fmt(Object.keys(agg).length)+' · строк всего: '+fmt(ROWS.length);
+  body.innerHTML = names.length ? names.map(function(n){
+    var a = agg[n];
+    var variants = Object.keys(a.raw).map(function(v){ return v+' ('+a.raw[v]+')'; }).join(', ');
+    return '<tr><td>'+esc(n)+'</td><td class="num">'+fmt(a.total)+'</td>'+
+      '<td class="num">'+fmt(a.closed)+'</td><td class="num">'+fmt(a.active)+'</td>'+
+      '<td style="font-size:11px;color:var(--muted)">'+esc(variants)+'</td></tr>';
+  }).join('') : '<tr><td colspan="5" class="empty-note">Ничего не найдено</td></tr>';
+}
 function renderHistory(){
   var hist = getHist();
   var q = (document.getElementById('histSearch').value||'').toLowerCase();
@@ -1960,6 +2038,7 @@ function renderHistory(){
         ? '<button class="btn" data-deluser="1" data-login="'+esc(u.login)+'" style="padding:3px 9px;font-size:11.5px">Удалить</button>':'')+'</td></tr>';
   }).join('');
   renderLogins();
+  renderRecon();
 }
 
 document.getElementById('dbTestBtn').addEventListener('click', function(){
@@ -1998,6 +2077,20 @@ document.getElementById('dbTestBtn').addEventListener('click', function(){
       msg.innerHTML = '<span style="color:var(--red)">Запрос не прошёл: '+esc(e.message)+
         '</span><br><span style="color:var(--muted)">Проверьте /api/db?diag=1 в адресной строке.</span>';
     });
+});
+document.getElementById('reconSearch').addEventListener('input', renderRecon);
+document.getElementById('reconCopy').addEventListener('click', function(){
+  var lines=['Подразделение\tВсего\tЗакрыто\tВ работе'];
+  document.querySelectorAll('#reconBody tr').forEach(function(tr){
+    var c=tr.children; if(c.length<4) return;
+    lines.push([c[0],c[1],c[2],c[3]].map(function(x){return x.textContent.trim();}).join('\t'));
+  });
+  var txt=lines.join('\n');
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(txt).then(function(){
+      document.getElementById('reconMsg').innerHTML='<span style="color:var(--green)">Список скопирован — вставьте в таблицу для сверки.</span>';
+    });
+  }
 });
 document.getElementById('loginSearch').addEventListener('input', renderLogins);
 document.getElementById('clearLoginBtn').addEventListener('click', function(){
