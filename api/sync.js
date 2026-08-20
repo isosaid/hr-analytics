@@ -84,12 +84,67 @@ module.exports = async (req, res) => {
     }
   }
 
-  if (!c) return res.status(501).end(JSON.stringify({ ok: false, reason: 'no-storage',
+  // JSONP: ответ отдаётся как обычный скрипт — так запрос выглядит для фильтров
+  // как подключение файла, а не как обмен данными
+  const cb = String(q.cb || '').replace(/[^A-Za-z0-9_$]/g, '').slice(0, 40);
+  const sendJSONP = (obj, status) => {
+    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    return res.status(status || 200).end(cb + '(' + JSON.stringify(obj) + ');');
+  };
+
+  if (!c) return cb
+    ? sendJSONP({ ok: false, reason: 'no-storage' })
+    : res.status(501).end(JSON.stringify({ ok: false, reason: 'no-storage',
     hint: 'Добавьте UPSTASH_REDIS_REST_URL и UPSTASH_REDIS_REST_TOKEN в переменные окружения проекта.' }));
+
+  // Запись через JSONP-ссылку: данные приходят в параметре p
+  if (cb && q.p) {
+    try {
+      const payload = JSON.parse(decodeURIComponent(q.p));
+      if (!ALLOWED.includes(payload.key)) return sendJSONP({ ok: false, reason: 'bad-key' });
+      if (Array.isArray(payload.merge)) {
+        const rawCur = await redis(['GET', PREFIX + payload.key]);
+        let cur = null;
+        try { cur = rawCur ? JSON.parse(rawCur) : null; } catch { cur = null; }
+        const arr = (cur && Array.isArray(cur.value)) ? cur.value : [];
+        const seen = new Set(arr.map(x => x && x.uid).filter(Boolean));
+        for (const item of payload.merge) {
+          if (!item || !item.uid || seen.has(item.uid)) continue;
+          seen.add(item.uid); arr.push(item);
+        }
+        arr.sort((a, b) => String(b.ts || '').localeCompare(String(a.ts || '')));
+        await redis(['SET', PREFIX + payload.key, JSON.stringify({ ts: Date.now(), value: arr.slice(0, 3000) })]);
+      } else {
+        await redis(['SET', PREFIX + payload.key, JSON.stringify({ ts: Date.now(), value: payload.value })]);
+      }
+      return sendJSONP({ ok: true });
+    } catch (e) {
+      return sendJSONP({ ok: false, reason: String(e.message || e) });
+    }
+  }
+
+  // Чтение через JSONP
+  if (cb) {
+    try {
+      const list = String(q.k || '').split(',').map(x => x.trim()).filter(x => ALLOWED.includes(x));
+      const keys = list.length ? list : ALLOWED.filter(k => k !== 'sheetdata');
+      const out = {};
+      const raw = await redis(['MGET', ...keys.map(k => PREFIX + k)]);
+      keys.forEach((k, i) => {
+        const v = raw && raw[i];
+        if (!v) { out[k] = null; return; }
+        try { out[k] = typeof v === 'string' ? JSON.parse(v) : v; } catch { out[k] = null; }
+      });
+      return sendJSONP({ ok: true, data: out, now: Date.now() });
+    } catch (e) {
+      return sendJSONP({ ok: false, reason: String(e.message || e) });
+    }
+  }
 
   try {
     if (req.method === 'GET') {
       const list = String(q.keys || '').split(',').map(s => s.trim()).filter(Boolean);
+      // без параметров отдаём весь набор: адрес выглядит как обычный файл данных
       const keys = list.length ? list.filter(k => ALLOWED.includes(k)) : ALLOWED;
       const out = {};
       if (keys.length) {
