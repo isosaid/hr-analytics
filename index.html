@@ -330,18 +330,18 @@
         по закрытым вакансиям, сроки поиска и просрочка — по открытым. Фильтр «Статус» здесь не применяется,
         остальные фильтры работают.</div>
       <div class="kpi-row">
-        <div class="kpi blue"><div class="bar-accent"></div><div class="lab">В среднем закрытие позиции занимает</div>
+        <div class="kpi blue blk-closed"><div class="bar-accent"></div><div class="lab">В среднем закрытие позиции занимает</div>
           <div class="val"><span id="kpiAvgDays">–</span> <span style="font-size:18px;color:var(--muted)">дней</span></div>
           <div class="sub">среднее по закрытым вакансиям выборки</div></div>
-        <div class="kpi green"><div class="bar-accent"></div><div class="lab">По медиане закрытие позиции занимает</div>
+        <div class="kpi green blk-closed"><div class="bar-accent"></div><div class="lab">По медиане закрытие позиции занимает</div>
           <div class="val"><span id="kpiMedDays">–</span> <span style="font-size:18px;color:var(--muted)">дней</span></div>
           <div class="sub">половина вакансий закрывается быстрее</div></div>
-        <div class="kpi red"><div class="bar-accent"></div><div class="lab">Вакансии, превышающие срок закрытия</div>
+        <div class="kpi red blk-open"><div class="bar-accent"></div><div class="lab">Вакансии, превышающие срок закрытия</div>
           <div class="val" id="kpiOverdue">–</div>
           <div class="sub">из <span id="kpiOpenTotal">–</span> открытых вакансий вышли за план</div></div>
       </div>
       <div class="grid">
-        <div class="card">
+        <div class="card blk-open">
           <h3>Вакансии, превышающие срок закрытия</h3>
           <div class="card-sub">Открытые вакансии, где срок поиска превысил план по категории. Отсчёт на <span id="refDateNote"></span></div>
           <div class="scroll-box"><table class="dt">
@@ -349,7 +349,7 @@
               <th style="text-align:right">В поиске</th><th style="text-align:right">Отклонение</th></tr></thead>
             <tbody id="overdueBody"></tbody></table></div>
         </div>
-        <div class="card">
+        <div class="card blk-closed">
           <h3>План / факт закрытия вакансий</h3>
           <div class="card-sub">Плановый срок закрытия по категории против фактического среднего</div>
           <div class="legend-row">
@@ -359,14 +359,14 @@
         </div>
       </div>
       <div class="grid half">
-        <div class="card"><h3>Среднее кол-во дней на закрытие вакансии</h3>
+        <div class="card blk-closed"><h3>Среднее кол-во дней на закрытие вакансии</h3>
           <div class="card-sub">По закрытым вакансиям, среднее по подразделению</div>
           <div class="chart" id="chartAvgClose"></div></div>
-        <div class="card"><h3>Среднее кол-во дней поиска по открытым вакансиям</h3>
+        <div class="card blk-open"><h3>Среднее кол-во дней поиска по открытым вакансиям</h3>
           <div class="card-sub">Сколько дней уже длится поиск, среднее по подразделению</div>
           <div class="chart" id="chartAvgOpen"></div></div>
       </div>
-      <div class="card">
+      <div class="card blk-closed">
         <h3>Дольше всего закрываемые позиции (закрытые вакансии)</h3>
         <div class="card-sub">Топ-25 фактически закрытых вакансий с самым долгим сроком поиска</div>
         <div class="scroll-box" style="max-height:420px"><table class="dt">
@@ -1095,6 +1095,23 @@ function renderOpenVacTable(){
 }
 
 /* ---------- render: detail ---------- */
+function applyDetailVisibility(){
+  var st = document.getElementById('f-status').value;
+  var showClosed = (st !== STATUS_OPEN);
+  var showOpen   = (st !== STATUS_CLOSED);
+  document.querySelectorAll('#view-detail .blk-closed').forEach(function(el){ el.style.display = showClosed ? '' : 'none'; });
+  document.querySelectorAll('#view-detail .blk-open').forEach(function(el){ el.style.display = showOpen ? '' : 'none'; });
+  var note = document.getElementById('detailNote');
+  if(note){
+    note.textContent = st===STATUS_CLOSED
+      ? 'Показаны блоки по закрытым вакансиям: фактические сроки закрытия, план/факт и самые долгие позиции.'
+      : st===STATUS_OPEN
+      ? 'Показаны блоки по открытым вакансиям: просроченные позиции и текущие сроки поиска.'
+      : 'Сроки закрытия считаются по закрытым вакансиям, просрочка и сроки поиска — по открытым. Выберите статус, чтобы оставить только нужные блоки.';
+  }
+  var row = document.querySelector('#view-detail .kpi-row');
+  if(row) row.style.gridTemplateColumns = (showClosed && showOpen) ? '' : (showClosed ? 'repeat(2,1fr)' : '1fr');
+}
 function renderDetail(rows){
   var closedRows=rows.filter(function(d){return d.status===STATUS_CLOSED && d._days_metric!=null;});
   var daysArr=closedRows.map(function(d){return d._days_metric;});
@@ -2173,8 +2190,8 @@ function renderAll(){
   var rows = applyFilters();
   document.getElementById('rowCountTag').textContent = fmt(rows.length)+' заявок';
   try { renderGeneral(rows); } catch(e){ console.error('general', e); }
-  /* блоки этой вкладки сами делятся на закрытые и открытые — фильтр статуса их только обнуляет */
-  try { renderDetail(applyFilters({ignoreStatus:true})); } catch(e){ console.error('detail', e); }
+  /* блоки сами берут свой набор данных; фильтр статуса решает, какие из них показывать */
+  try { renderDetail(applyFilters({ignoreStatus:true})); applyDetailVisibility(); } catch(e){ console.error('detail', e); }
   try { renderPivot(); } catch(e){ console.error('pivot', e); }
   try { renderHistory(); } catch(e){ console.error('history', e); }
   try { initGS(); } catch(e){ console.error('gs', e); }
