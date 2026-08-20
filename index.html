@@ -137,6 +137,14 @@
     text-overflow:ellipsis;cursor:text;border:2px solid transparent;border-radius:5px;}
   td .cell:hover{background:#eef1ff;}
   td .cell:focus{outline:none;border-color:var(--blue);background:#fff;white-space:normal;}
+  td .cell-inp{font-family:inherit;font-size:12.5px;background:transparent;color:inherit;
+    width:100%;min-width:96px;border:2px solid transparent;border-radius:5px;padding:6px 7px;}
+  td .cell-inp:hover{background:#eef1ff;}
+  td .cell-inp:focus{outline:none;border-color:var(--blue);background:#fff;}
+  td input.cell-inp[type=number]{text-align:right;font-variant-numeric:tabular-nums;font-weight:600;}
+  td.err .cell-inp{background:var(--red-soft);border-color:#f6b8ad;color:#a8291a;}
+  td.fixed .cell-inp{background:var(--green-soft);border-color:#9ddcc4;color:#0d7a55;}
+  td select.cell-inp{cursor:pointer;}
   td.err .cell{background:var(--red-soft);border-color:#f6b8ad;color:#a8291a;font-weight:600;}
   td.err .cell:focus{background:#fff;border-color:var(--red);}
   td.fixed .cell{background:var(--green-soft);border-color:#9ddcc4;color:#0d7a55;font-weight:600;}
@@ -1206,10 +1214,26 @@ function renderPivot(){
       var ro = col.ro || !canEdit();
       var cls = ro ? (err ? 'err ro' : 'ro') : (err ? 'err' : (edited ? 'fixed' : ''));
       var title = err ? err.join('; ') : '';
-      return '<td class="'+cls+'"'+(title?' title="'+esc(title)+'"':'')+'>'+
-        '<span class="cell"'+(ro?'':' contenteditable="true" spellcheck="false"')+
-        ' data-i="'+r.i+'" data-f="'+col.f+'"'+(col.type?' data-type="'+col.type+'"':'')+'>'+
-        esc(cellValue(r,col))+'</span></td>';
+      var attrs = ' data-i="'+r.i+'" data-f="'+col.f+'"'+(col.type?' data-type="'+col.type+'"':'');
+      var inner;
+      if(!ro && col.type==='num'){
+        var nv = toNum(r[col.f]);
+        inner = '<input class="cell cell-inp" type="number" min="0" step="1" inputmode="numeric"'+attrs+
+                ' value="'+((nv===null||isNaN(nv))?'':nv)+'">';
+      } else if(!ro && col.type==='date'){
+        var dv = parseDate(r[col.f]);
+        var iso = (dv && dv!==undefined)
+          ? dv.getFullYear()+'-'+String(dv.getMonth()+1).padStart(2,'0')+'-'+String(dv.getDate()).padStart(2,'0') : '';
+        inner = '<input class="cell cell-inp" type="date"'+attrs+' value="'+iso+'">';
+      } else if(!ro && col.type==='select'){
+        var opts = (col.opts||[]).map(function(o){
+          return '<option value="'+esc(o)+'"'+(String(r[col.f]||'')===o?' selected':'')+'>'+esc(o)+'</option>'; }).join('');
+        inner = '<select class="cell cell-inp"'+attrs+'><option value="">—</option>'+opts+'</select>';
+      } else {
+        inner = '<span class="cell"'+(ro?'':' contenteditable="true" spellcheck="false"')+attrs+'>'+
+                esc(cellValue(r,col))+'</span>';
+      }
+      return '<td class="'+cls+'"'+(title?' title="'+esc(title)+'"':'')+'>'+inner+'</td>';
     }).join('');
     var msgs = [];
     for(var f in r._errCells) r._errCells[f].forEach(function(m){ if(msgs.indexOf(m)<0) msgs.push(m); });
@@ -1226,6 +1250,10 @@ function renderPivot(){
 function normalizeInput(val, type){
   val = String(val).replace(/\s+/g,' ').trim();
   if(val==='') return null;
+  if(type==='num'){
+    var n = toNum(val);
+    return (n===null || isNaN(n)) ? val : n;   /* храним числом, а не строкой */
+  }
   if(type==='date'){
     var d = parseDate(val);
     if(d===undefined || d===null) return val;  /* оставим как есть -> правило поймает */
@@ -1233,15 +1261,16 @@ function normalizeInput(val, type){
   }
   return val;
 }
-document.getElementById('pivotBody').addEventListener('focusout', function(e){
-  var el = e.target;
-  if(!el.classList || !el.classList.contains('cell') || !el.hasAttribute('contenteditable')) return;
-  if(!canEdit()) return;
+function commitCell(el){
+  if(!el || !el.classList || !el.classList.contains('cell')) return;
+  var editable = el.hasAttribute('contenteditable') || el.classList.contains('cell-inp');
+  if(!editable || !canEdit()) return;
   var i = +el.dataset.i, f = el.dataset.f, type = el.dataset.type;
   var row = ROWS.find(function(r){ return r.i===i; });
   if(!row) return;
   var before = row[f];
-  var next = normalizeInput(el.textContent, type);
+  var raw = el.classList.contains('cell-inp') ? el.value : el.textContent;
+  var next = normalizeInput(raw, type);
   var beforeCmp = (before===null||before===undefined)? null : String(before);
   var nextCmp = (next===null)? null : String(next);
   if(beforeCmp===nextCmp) return;
@@ -1264,14 +1293,27 @@ document.getElementById('pivotBody').addEventListener('focusout', function(e){
   rebuild();
   refreshFilterOptions();
   renderAll();
+}
+document.getElementById('pivotBody').addEventListener('focusout', function(e){ commitCell(e.target); });
+/* стрелки счётчика и выбор даты меняют значение без потери фокуса */
+document.getElementById('pivotBody').addEventListener('change', function(e){
+  if(e.target && e.target.classList && e.target.classList.contains('cell-inp')) commitCell(e.target);
 });
 document.getElementById('pivotBody').addEventListener('keydown', function(e){
-  if(e.key==='Enter' && e.target.classList && e.target.classList.contains('cell')){ e.preventDefault(); e.target.blur(); }
-  if(e.key==='Escape' && e.target.classList && e.target.classList.contains('cell')){
-    var i=+e.target.dataset.i, f=e.target.dataset.f;
+  var t=e.target;
+  if(!t.classList || !t.classList.contains('cell')) return;
+  if(e.key==='Enter'){ e.preventDefault(); t.blur(); }
+  if(e.key==='Escape'){
+    var i=+t.dataset.i, f=t.dataset.f;
     var row=ROWS.find(function(r){return r.i===i;});
-    var col=COLS.find(function(c){return c.f===f;});
-    e.target.textContent = cellValue(row,col); e.target.blur();
+    var col=COLS.find(function(c){return c.f===f;}) || {};
+    if(t.classList.contains('cell-inp')){
+      if(col.type==='num'){ var n=toNum(row[f]); t.value=(n===null||isNaN(n))?'':n; }
+      else if(col.type==='date'){ var d=parseDate(row[f]);
+        t.value=(d&&d!==undefined)? d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0') : ''; }
+      else t.value = row[f]==null?'':String(row[f]);
+    } else t.textContent = cellValue(row,col);
+    t.blur();
   }
 });
 
