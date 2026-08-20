@@ -149,6 +149,9 @@
     color:#4b5563;background:#f4f6fb;cursor:default;padding:7px 8px;border-radius:5px;}
   td .cell.calc:hover{background:#eaeef7;}
   td .cell.calc-open{color:#b9700a;background:var(--amber-soft);}
+  td input.days-auto{background:#f4f6fb;color:#4b5563;}
+  td input.days-manual{background:var(--green-soft);border-color:#9ddcc4;color:#0d7a55;}
+  td input.cell-inp:placeholder-shown{border-color:#e6e8ee;border-style:dashed;}
   td.err .cell.calc{background:var(--red-soft);color:#a8291a;}
   td.err .cell{background:var(--red-soft);border-color:#f6b8ad;color:#a8291a;font-weight:600;}
   td.err .cell:focus{background:#fff;border-color:var(--red);}
@@ -833,7 +836,7 @@ function persistNew(){ DB.set('newrows', NEWROWS); }
 function isNewRow(i){ return i >= 900000; }
 applyEdits();
 
-function derive(r){
+function derive(r, manualDays){
   var o = parseDate(r.open), c = parseDate(r.close);
   var d = {};
   d.company = normCompany(r.companyRaw);
@@ -842,12 +845,15 @@ function derive(r){
   var dc = toNum(r.days_close);
   var oOk = !!o && o!==undefined, cOk = !!c && c!==undefined;
   /* формула: пусто в дате закрытия → сегодня минус открытие, иначе закрытие минус открытие */
-  if(oOk && cOk && c>=o)   d.days_close = daysBetween(o, c);
+  d.daysManual = !!manualDays && dc!==null && !isNaN(dc) && dc>=0;
+  if(d.daysManual)         d.days_close = dc;                                  /* вписано вручную */
+  else if(oOk && cOk && c>=o) d.days_close = daysBetween(o, c);
   else if(oOk && !cOk)     d.days_close = Math.max(0, daysBetween(o, REF_DATE));
   else                     d.days_close = (dc!==null && !isNaN(dc) && dc>=0) ? dc : null;
   /* для средних сроков берём только вакансии с настоящей датой закрытия */
-  d.days_metric = (oOk && cOk && c>=o) ? daysBetween(o, c)
-                : ((dc!==null && !isNaN(dc) && dc>=0) ? dc : null);
+  d.days_metric = d.daysManual ? dc
+                : ((oOk && cOk && c>=o) ? daysBetween(o, c)
+                : ((dc!==null && !isNaN(dc) && dc>=0) ? dc : null));
   d.days_open_now = (r.status===STATUS_OPEN && o) ? Math.max(0, daysBetween(o, REF_DATE)) : null;
   var iv = toNum(r.interviews); d.interviews = (iv===null||isNaN(iv))?0:iv;
   /* вакансия считается активной только если по ней ещё остался незакрытый набор */
@@ -861,9 +867,11 @@ function derive(r){
 }
 function rebuild(){
   ROWS.forEach(function(r){
-    var d = derive(r);
+    var manual = EDITS.hasOwnProperty(r.i+':days_close') ||
+                 (isNewRow(r.i) && r.days_close!==null && r.days_close!==undefined && String(r.days_close)!=='');
+    var d = derive(r, manual);
     r._company=d.company; r._year=d.year; r._month=d.month;
-    r._days_close=d.days_close; r._days_metric=d.days_metric;
+    r._days_close=d.days_close; r._days_metric=d.days_metric; r._daysManual=d.daysManual;
     r._days_open_now=d.days_open_now; r._interviews=d.interviews;
     r._left=d.left; r._openActive=d.openActive;
     var v = validateRow(r);
@@ -1229,14 +1237,16 @@ function renderPivot(){
       var attrs = ' data-i="'+r.i+'" data-f="'+col.f+'"'+(col.type?' data-type="'+col.type+'"':'');
       var inner;
       /* срок закрытия считается по датам — вручную не правится */
-      var oD = parseDate(r.open), cD = parseDate(r.close);
-      var hasOpen = !!oD && oD!==undefined, hasClose = !!cD && cD!==undefined;
-      var autoDays = (col.f==='days_close') && hasOpen;
-      if(autoDays){
-        var hint = hasClose ? 'Рассчитано: дата закрытия минус дата открытия'
-                            : 'В поиске: сегодня минус дата открытия, пересчитывается при каждом входе';
-        inner = '<span class="cell calc'+(hasClose?'':' calc-open')+'" title="'+hint+'"'+attrs+'>'+
-                (r._days_close==null?'—':fmt(r._days_close))+'</span>';
+      if(col.f==='days_close' && !ro){
+        var cD2 = parseDate(r.close), oD2 = parseDate(r.open);
+        var hasClose2 = !!cD2 && cD2!==undefined, hasOpen2 = !!oD2 && oD2!==undefined;
+        var hint = r._daysManual ? 'Значение введено вручную. Очистите поле, чтобы вернуть автоматический расчёт'
+                 : hasClose2 ? 'Рассчитано: дата закрытия минус дата открытия. Можно исправить вручную'
+                 : hasOpen2  ? 'В поиске: сегодня минус дата открытия, обновляется каждый день. Можно исправить вручную'
+                 : 'Введите количество дней';
+        var mark = r._daysManual ? ' days-manual' : (hasOpen2 ? ' days-auto' : '');
+        inner = '<input class="cell cell-inp'+mark+'" type="number" min="0" step="1" inputmode="numeric"'+
+                ' title="'+hint+'"'+attrs+' value="'+(r._days_close==null?'':r._days_close)+'">';
       } else if(!ro && col.type==='num'){
         var nv = toNum(r[col.f]);
         inner = '<input class="cell cell-inp" type="number" min="0" step="1" inputmode="numeric"'+attrs+
