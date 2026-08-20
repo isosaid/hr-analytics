@@ -818,19 +818,21 @@ var RULES = [
   {key:'days_empty',     field:'days_close',label:'Не заполнены дни на закрытие',
    test:function(r){ return r.status===STATUS_CLOSED && (r.days_close===null||String(r.days_close).trim()===''); },
    msg:'Вакансия закрыта, но срок закрытия не проставлен'},
-  {key:'interviews_empty',field:'interviews',label:'Закрыта без собеседований',
+  {key:'interviews_empty',field:'interviews',label:'Не заполнены собеседования',
    test:function(r){ var v=toNum(r.interviews);
-     return r.status===STATUS_CLOSED && (v===null || v===0); },
-   msg:'Вакансия закрыта, но количество кандидатов на собеседовании пустое или 0'},
+     return r.status===STATUS_CLOSED && (v===null || isNaN(v)); },   /* явный ноль — не ошибка */
+   msg:'Вакансия закрыта, но поле «кандидатов на собеседовании» не заполнено'},
   {key:'hires_empty',    field:'hires',     label:'Не заполнено количество найма',
-   test:function(r){ return r.hires===null || String(r.hires).trim()===''; },
+   test:function(r){ var v=toNum(r.hires); return v===null || isNaN(v); },
    msg:'Количество найма не заполнено'},
   {key:'fio_empty',      field:'fio',       label:'Закрыта, но нет ФИО',
    test:function(r){ return r.status===STATUS_CLOSED && !r.fio; },
    msg:'Вакансия закрыта, но ФИО принятого сотрудника не указано'},
   {key:'closed_total_empty',field:'closed_total',label:'Не заполнено «Всего закрытых»',
-   test:function(r){ return r.status===STATUS_CLOSED && (r.closed_total===null||String(r.closed_total).trim()===''); },
-   msg:'Вакансия закрыта, но поле «Всего закрытых» пустое'},
+   test:function(r){ if(r.status!==STATUS_CLOSED) return false;
+     var v=toNum(r.closed_total);
+     return v===null || isNaN(v); },                                  /* ноль допустим */
+   msg:'Вакансия закрыта, но поле «Всего закрытых» не заполнено'},
   {key:'no_left',       field:'closed_total',label:'Открыта, но остаток 0',
    test:function(r){ var h=toNum(r.hires), c=toNum(r.closed_total);
      if(r.status!==STATUS_OPEN) return false;
