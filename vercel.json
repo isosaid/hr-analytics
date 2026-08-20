@@ -8,6 +8,7 @@
     }
   ],
   "rewrites": [
+    { "source": "/data/hr.json", "destination": "/api/db" },
     { "source": "/reports/summary", "destination": "/api/db" },
     { "source": "/hr/data", "destination": "/api/db" },
     { "source": "/service/records", "destination": "/api/db" }
