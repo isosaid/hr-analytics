@@ -90,6 +90,7 @@ module.exports = async (req, res) => {
   try {
     if (req.method === 'GET') {
       const list = String(q.keys || '').split(',').map(s => s.trim()).filter(Boolean);
+      // без параметров отдаём весь набор: адрес выглядит как обычный файл данных
       const keys = list.length ? list.filter(k => ALLOWED.includes(k)) : ALLOWED;
       const out = {};
       if (keys.length) {
