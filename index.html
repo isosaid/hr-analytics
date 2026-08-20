@@ -148,6 +148,7 @@
   td .cell.calc{display:block;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;
     color:#4b5563;background:#f4f6fb;cursor:default;padding:7px 8px;border-radius:5px;}
   td .cell.calc:hover{background:#eaeef7;}
+  td .cell.calc-open{color:#b9700a;background:var(--amber-soft);}
   td.err .cell.calc{background:var(--red-soft);color:#a8291a;}
   td.err .cell{background:var(--red-soft);border-color:#f6b8ad;color:#a8291a;font-weight:600;}
   td.err .cell:focus{background:#fff;border-color:var(--red);}
@@ -839,9 +840,14 @@ function derive(r){
   d.year  = o ? o.getFullYear() : null;
   d.month = o ? MONTHS[o.getMonth()] : null;
   var dc = toNum(r.days_close);
-  /* приоритет — расчёт по датам; если дат нет, берём значение из файла */
-  if(o && c && c>=o) d.days_close = daysBetween(o,c);
-  else d.days_close = (dc!==null && !isNaN(dc) && dc>=0) ? dc : null;
+  var oOk = !!o && o!==undefined, cOk = !!c && c!==undefined;
+  /* формула: пусто в дате закрытия → сегодня минус открытие, иначе закрытие минус открытие */
+  if(oOk && cOk && c>=o)   d.days_close = daysBetween(o, c);
+  else if(oOk && !cOk)     d.days_close = Math.max(0, daysBetween(o, REF_DATE));
+  else                     d.days_close = (dc!==null && !isNaN(dc) && dc>=0) ? dc : null;
+  /* для средних сроков берём только вакансии с настоящей датой закрытия */
+  d.days_metric = (oOk && cOk && c>=o) ? daysBetween(o, c)
+                : ((dc!==null && !isNaN(dc) && dc>=0) ? dc : null);
   d.days_open_now = (r.status===STATUS_OPEN && o) ? Math.max(0, daysBetween(o, REF_DATE)) : null;
   var iv = toNum(r.interviews); d.interviews = (iv===null||isNaN(iv))?0:iv;
   /* вакансия считается активной только если по ней ещё остался незакрытый набор */
@@ -857,7 +863,8 @@ function rebuild(){
   ROWS.forEach(function(r){
     var d = derive(r);
     r._company=d.company; r._year=d.year; r._month=d.month;
-    r._days_close=d.days_close; r._days_open_now=d.days_open_now; r._interviews=d.interviews;
+    r._days_close=d.days_close; r._days_metric=d.days_metric;
+    r._days_open_now=d.days_open_now; r._interviews=d.interviews;
     r._left=d.left; r._openActive=d.openActive;
     var v = validateRow(r);
     r._errCells = v.cells; r._errKeys = v.keys;
@@ -1075,12 +1082,12 @@ function renderOpenVacTable(){
 
 /* ---------- render: detail ---------- */
 function renderDetail(rows){
-  var closedRows=rows.filter(function(d){return d.status===STATUS_CLOSED && d._days_close!=null;});
-  var daysArr=closedRows.map(function(d){return d._days_close;});
+  var closedRows=rows.filter(function(d){return d.status===STATUS_CLOSED && d._days_metric!=null;});
+  var daysArr=closedRows.map(function(d){return d._days_metric;});
   document.getElementById('kpiAvgDays').textContent=daysArr.length?fmt1(avg(daysArr)):'–';
   document.getElementById('kpiMedDays').textContent=daysArr.length?fmt(median(daysArr)):'–';
 
-  var byCatDays={}; closedRows.forEach(function(d){ (byCatDays[d.cat]=byCatDays[d.cat]||[]).push(d._days_close); });
+  var byCatDays={}; closedRows.forEach(function(d){ (byCatDays[d.cat]=byCatDays[d.cat]||[]).push(d._days_metric); });
   var pfLabels=CAT_ORDER.filter(function(c){return byCatDays[c]&&byCatDays[c].length;});
   vGroupedBar('chartPlanFact', pfLabels, [
     {data:pfLabels.map(function(c){return PLAN_DAYS[c];}),color:C.green},
@@ -1088,7 +1095,7 @@ function renderDetail(rows){
     {height:300,barW:26,decimal:true});
 
   var closeByCompany={};
-  closedRows.forEach(function(d){ (closeByCompany[d._company]=closeByCompany[d._company]||[]).push(d._days_close); });
+  closedRows.forEach(function(d){ (closeByCompany[d._company]=closeByCompany[d._company]||[]).push(d._days_metric); });
   var ccLabels=Object.keys(closeByCompany).sort(function(a,b){return avg(closeByCompany[a])-avg(closeByCompany[b]);});
   hSingleBarDec('chartAvgClose', ccLabels, ccLabels.map(function(c){return avg(closeByCompany[c]);}), C.blue, {labelW:200});
 
@@ -1108,10 +1115,10 @@ function renderDetail(rows){
         '</td><td class="num">'+fmt(d.days)+'</td><td class="num"><span class="pill '+(d.dev>60?'red':'amber')+'">+'+fmt(d.dev)+'</span></td></tr>';}).join('')
     : '<tr><td colspan="5" class="empty-note">Нет просроченных вакансий по текущим фильтрам</td></tr>';
 
-  var slowest=closedRows.slice().sort(function(a,b){return b._days_close-a._days_close;}).slice(0,25);
+  var slowest=closedRows.slice().sort(function(a,b){return b._days_metric-a._days_metric;}).slice(0,25);
   document.getElementById('slowestBody').innerHTML = slowest.length
     ? slowest.map(function(d){return '<tr><td>'+esc(d._company)+'</td><td>'+esc(d.pos)+'</td><td>'+esc(d.cat)+
-        '</td><td class="num">'+fmt(d._days_close)+'</td><td class="num">'+fmt(d._interviews)+'</td></tr>';}).join('')
+        '</td><td class="num">'+fmt(d._days_metric)+'</td><td class="num">'+fmt(d._interviews)+'</td></tr>';}).join('')
     : '<tr><td colspan="5" class="empty-note">Нет закрытых вакансий по текущим фильтрам</td></tr>';
 }
 
@@ -1222,10 +1229,13 @@ function renderPivot(){
       var attrs = ' data-i="'+r.i+'" data-f="'+col.f+'"'+(col.type?' data-type="'+col.type+'"':'');
       var inner;
       /* срок закрытия считается по датам — вручную не правится */
-      var autoDays = (col.f==='days_close') && parseDate(r.open) && parseDate(r.close) &&
-                     parseDate(r.open)!==undefined && parseDate(r.close)!==undefined;
+      var oD = parseDate(r.open), cD = parseDate(r.close);
+      var hasOpen = !!oD && oD!==undefined, hasClose = !!cD && cD!==undefined;
+      var autoDays = (col.f==='days_close') && hasOpen;
       if(autoDays){
-        inner = '<span class="cell calc" title="Рассчитано по датам открытия и закрытия"'+attrs+'>'+
+        var hint = hasClose ? 'Рассчитано: дата закрытия минус дата открытия'
+                            : 'В поиске: сегодня минус дата открытия, пересчитывается при каждом входе';
+        inner = '<span class="cell calc'+(hasClose?'':' calc-open')+'" title="'+hint+'"'+attrs+'>'+
                 (r._days_close==null?'—':fmt(r._days_close))+'</span>';
       } else if(!ro && col.type==='num'){
         var nv = toNum(r[col.f]);
