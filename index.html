@@ -285,9 +285,10 @@
         </div>
         <div class="card">
           <h3>Открытые вакансии по всему холдингу</h3>
-          <div class="card-sub"><b id="openVacCount">–</b> вакансий сейчас в статусе «Открыта» ·
+          <div class="card-sub"><b id="openVacCount">–</b> вакансий в работе ·
             требуется <b id="openVacHires">–</b> чел. · принято <b id="openVacDone">–</b> ·
-            осталось найти <b style="color:var(--red)" id="openVacLeft">–</b></div>
+            осталось найти <b style="color:var(--red)" id="openVacLeft">–</b>
+            <span id="openVacSkip"></span></div>
           <input class="search-box" id="openVacSearch" placeholder="Поиск по подразделению или позиции…">
           <div class="scroll-box"><table class="dt">
             <thead><tr><th>Подразделение</th><th>Позиция</th>
@@ -866,7 +867,7 @@ function derive(r, manualDays){
   var need = (hv===null||isNaN(hv)) ? null : hv;
   var got  = (cv===null||isNaN(cv)) ? 0 : cv;
   d.left = (need===null) ? null : Math.max(0, need-got);
-  d.openActive = (r.status===STATUS_OPEN) && !(need!==null && need>0 && got>=need);
+  d.openActive = (r.status===STATUS_OPEN) && need!==null && need>0 && got<need;
   if(!d.openActive) d.days_open_now = null;
   return d;
 }
@@ -1021,7 +1022,7 @@ function pieChart(id, labels, values, colors){
 }
 
 /* ---------- render: general ---------- */
-var _openVacRows=[];
+var _openVacRows=[], rowsAllOpen=0;
 function renderGeneral(rows){
   var closedCount=rows.filter(function(d){return d.status===STATUS_CLOSED;}).length;
   document.getElementById('kpiTotal').textContent=fmt(rows.length);
@@ -1066,6 +1067,7 @@ function renderGeneral(rows){
     {data:periods.map(function(p){return byPeriod[p].opened;}),color:C.blue},
     {data:periods.map(function(p){return byPeriod[p].closed;}),color:C.green}], {height:290,barW:14});
 
+  rowsAllOpen = rows.filter(function(d){return d.status===STATUS_OPEN;}).length;
   _openVacRows=rows.filter(function(d){return d._openActive;})
     .sort(function(a,b){return a._company.localeCompare(b._company,'ru')||String(a.pos).localeCompare(String(b.pos),'ru');});
   renderOpenVacTable();
@@ -1076,6 +1078,11 @@ function renderOpenVacTable(){
     return !q || d._company.toLowerCase().indexOf(q)>=0 || String(d.pos||'').toLowerCase().indexOf(q)>=0; });
   var n0=function(v){ v=toNum(v); return (v===null||isNaN(v))?0:v; };
   document.getElementById('openVacCount').textContent=fmt(_openVacRows.length);
+  var skipped = rowsAllOpen - _openVacRows.length;
+  var skipEl = document.getElementById('openVacSkip');
+  if(skipEl) skipEl.innerHTML = skipped>0
+    ? '<br><span style="color:var(--muted)">Ещё '+fmt(skipped)+
+      ' со статусом «Открыта» не показаны: набор закрыт или не указано количество</span>' : '';
   var sumH=_openVacRows.reduce(function(a,d){return a+n0(d.hires);},0);
   var sumD=_openVacRows.reduce(function(a,d){return a+Math.min(n0(d.closed_total), n0(d.hires));},0);
   document.getElementById('openVacHires').textContent=fmt(sumH);
