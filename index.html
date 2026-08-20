@@ -145,6 +145,10 @@
   td.err .cell-inp{background:var(--red-soft);border-color:#f6b8ad;color:#a8291a;}
   td.fixed .cell-inp{background:var(--green-soft);border-color:#9ddcc4;color:#0d7a55;}
   td select.cell-inp{cursor:pointer;}
+  td .cell.calc{display:block;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;
+    color:#4b5563;background:#f4f6fb;cursor:default;padding:7px 8px;border-radius:5px;}
+  td .cell.calc:hover{background:#eaeef7;}
+  td.err .cell.calc{background:var(--red-soft);color:#a8291a;}
   td.err .cell{background:var(--red-soft);border-color:#f6b8ad;color:#a8291a;font-weight:600;}
   td.err .cell:focus{background:#fff;border-color:var(--red);}
   td.fixed .cell{background:var(--green-soft);border-color:#9ddcc4;color:#0d7a55;font-weight:600;}
@@ -740,10 +744,11 @@ var RULES = [
   {key:'future_date',    field:'close',     label:'Дата в будущем',
    test:function(r){ var c=parseDate(r.close); return !!c && c>REF_DATE; },
    msg:'Дата закрытия позже сегодняшнего дня — вакансия не может быть закрыта будущим числом'},
-  {key:'days_mismatch',  field:'days_close',label:'Дни не сходятся с датами',
+  {key:'days_mismatch',  field:'days_close',label:'Расхождение в исходных данных',
    test:function(r){ var o=parseDate(r.open), c=parseDate(r.close), d=toNum(r.days_close);
-     if(!o||!c||d===null||isNaN(d)) return false; return Math.abs(d - daysBetween(o,c))>1; },
-   msg:'Значение «дней на закрытие» не совпадает с разницей между датами'},
+     if(!o||!c||o===undefined||c===undefined||d===null||isNaN(d)) return false;
+     return Math.abs(d - daysBetween(o,c))>1; },
+   msg:'В таблице проставлен срок, не совпадающий с датами. В дашборде показан расчёт по датам — поправьте значение в Google Sheets'},
   {key:'days_neg',       field:'days_close',label:'Отрицательное число дней',
    test:function(r){ var d=toNum(r.days_close); return d!==null && !isNaN(d) && d<0; },
    msg:'Количество дней на закрытие не может быть отрицательным'},
@@ -1216,7 +1221,13 @@ function renderPivot(){
       var title = err ? err.join('; ') : '';
       var attrs = ' data-i="'+r.i+'" data-f="'+col.f+'"'+(col.type?' data-type="'+col.type+'"':'');
       var inner;
-      if(!ro && col.type==='num'){
+      /* срок закрытия считается по датам — вручную не правится */
+      var autoDays = (col.f==='days_close') && parseDate(r.open) && parseDate(r.close) &&
+                     parseDate(r.open)!==undefined && parseDate(r.close)!==undefined;
+      if(autoDays){
+        inner = '<span class="cell calc" title="Рассчитано по датам открытия и закрытия"'+attrs+'>'+
+                (r._days_close==null?'—':fmt(r._days_close))+'</span>';
+      } else if(!ro && col.type==='num'){
         var nv = toNum(r[col.f]);
         inner = '<input class="cell cell-inp" type="number" min="0" step="1" inputmode="numeric"'+attrs+
                 ' value="'+((nv===null||isNaN(nv))?'':nv)+'">';
