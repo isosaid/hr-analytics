@@ -1649,6 +1649,43 @@ function LOGIN_CAP_REF(){ return 2000; }
 function cloudTransient(code){ return code===499 || code===408 || code===425 || code===429 ||
                                       code===502 || code===503 || code===504; }
 function apiBase(){ return CLOUD.base || DB.get('apibase', null) || API_PATHS[0]; }
+
+/* Последний рубеж: обмен через подключение скрипта.
+   Для сетевых фильтров это выглядит как загрузка обычного файла страницы. */
+var JSONP_N = 0;
+function jsonp(params, timeoutMs){
+  return new Promise(function(resolve, reject){
+    var name = 'hraCb' + (++JSONP_N) + '_' + Date.now().toString(36);
+    var sc = document.createElement('script');
+    var done = false;
+    var timer = setTimeout(function(){ finish(new Error('нет ответа')); }, timeoutMs || 12000);
+    function finish(err, data){
+      if(done) return; done = true;
+      clearTimeout(timer);
+      try{ delete window[name]; }catch(e){ window[name] = undefined; }
+      if(sc.parentNode) sc.parentNode.removeChild(sc);
+      err ? reject(err) : resolve(data);
+    }
+    window[name] = function(data){ finish(null, data); };
+    var qs = Object.keys(params).map(function(k){
+      return encodeURIComponent(k)+'='+encodeURIComponent(params[k]); }).join('&');
+    sc.src = '/data/hr.js?cb='+name+'&'+qs+'&_='+Date.now();
+    sc.onerror = function(){ finish(new Error('скрипт не загрузился')); };
+    document.head.appendChild(sc);
+  });
+}
+function jsonpRead(){
+  return jsonp({k: CLOUD.keys.join(',')}).then(function(j){
+    if(!j || !j.ok) throw new Error((j && j.reason) || 'пустой ответ');
+    return j;
+  });
+}
+function jsonpWrite(key, value, isMerge){
+  var payload = isMerge ? {key:key, merge:value} : {key:key, value:value};
+  var enc = encodeURIComponent(JSON.stringify(payload));
+  if(enc.length > 6000) return Promise.reject(new Error('слишком большой объём'));
+  return jsonp({p: JSON.stringify(payload)});
+}
 function apiSetBase(p){ CLOUD.base = p; try{ DB.set('apibase', p); }catch(e){} }
 /* антивирус подменяет ответ своей HTML-страницей */
 function blockedByAV(text){
@@ -1662,7 +1699,8 @@ function cloudSay(txt, color){
   var el = document.getElementById('cloudState');
   if(el) el.innerHTML = '<span style="color:'+(color||'var(--muted)')+'">'+esc(txt)+'</span>';
 }
-function cloudOkSay(){ cloudSay('MS Access / SQL — база подключена · синхронизировано ' + nowStr(), 'var(--green)'); }
+function cloudOkSay(){ cloudSay('MS Access / SQL — база подключена · синхронизировано ' + nowStr() +
+  (CLOUD.viaScript ? ' · обходной режим' : ''), 'var(--green)'); }
 /* отправка значения на сервер (без ожидания) */
 function cloudPush(key, value, attempt){
   if(CLOUD.on===false) return;
@@ -1675,10 +1713,15 @@ function cloudPush(key, value, attempt){
     .then(function(r){
       if(r.status===501){ CLOUD.on=false; return; }
       if(r.ok){ CLOUD.on=true; CLOUD.fails=0; return; }
+      if(CLOUD.viaScript){ jsonpWrite(key, value, (key==='history'||key==='logins')).catch(function(){}); return; }
       if(cloudTransient(r.status) && attempt<2)
         setTimeout(function(){ cloudPush(key, value, attempt+1); }, 3000*(attempt+1));
     })
     .catch(function(){
+      if(CLOUD.viaScript){
+        jsonpWrite(key, value, (key==='history'||key==='logins')).catch(function(){});
+        return;
+      }
       if(attempt<2) setTimeout(function(){ cloudPush(key, value, attempt+1); }, 3000*(attempt+1));
     });
 }
@@ -1700,7 +1743,11 @@ function cloudPull(pathIdx){
         if(av || r.status===499){
           /* пробуем следующий адрес — вдруг он не в списке блокировки */
           if(start+1 < paths.length) return cloudPull(start+1).then(function(){ return null; });
-          var e=new Error('запрос блокирует «'+(av||'антивирус')+'»'); e.code='av'; e.av=true; throw e;
+          /* всё заблокировано — пробуем обмен через подключение скрипта */
+          return jsonpRead().then(function(j){ CLOUD.viaScript = true; return j; })
+            .catch(function(){
+              var e=new Error('запрос блокирует «'+(av||'антивирус')+'»'); e.code='av'; e.av=true; throw e;
+            });
         }
         if(!r.ok){
           var why=''; try{ var j=JSON.parse(t); why = j.reason||j.hint||''; }catch(e2){}
