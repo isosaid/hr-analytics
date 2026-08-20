@@ -3,14 +3,33 @@
     {
       "source": "/(.*)",
       "headers": [
-        { "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=0, must-revalidate"
+        }
       ]
     }
   ],
   "rewrites": [
-    { "source": "/data/hr.json", "destination": "/api/db" },
-    { "source": "/reports/summary", "destination": "/api/db" },
-    { "source": "/hr/data", "destination": "/api/db" },
-    { "source": "/service/records", "destination": "/api/db" }
+    {
+      "source": "/data/hr.js",
+      "destination": "/api/db"
+    },
+    {
+      "source": "/data/hr.json",
+      "destination": "/api/db"
+    },
+    {
+      "source": "/reports/summary",
+      "destination": "/api/db"
+    },
+    {
+      "source": "/hr/data",
+      "destination": "/api/db"
+    },
+    {
+      "source": "/service/records",
+      "destination": "/api/db"
+    }
   ]
 }
