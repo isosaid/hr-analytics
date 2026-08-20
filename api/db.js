@@ -105,6 +105,22 @@ module.exports = async (req, res) => {
 
     if (req.method === 'POST') {
       const body = await getBody(req);
+
+      // Чтение через POST: без параметров в адресе — их часто режут антивирусы и фильтры
+      if (Array.isArray(body.read)) {
+        const keys = body.read.map(k => String(k).trim()).filter(k => ALLOWED.includes(k));
+        const out = {};
+        if (keys.length) {
+          const raw = await redis(['MGET', ...keys.map(k => PREFIX + k)]);
+          keys.forEach((k, i) => {
+            const v = raw && raw[i];
+            if (!v) { out[k] = null; return; }
+            try { out[k] = typeof v === 'string' ? JSON.parse(v) : v; } catch { out[k] = null; }
+          });
+        }
+        return res.status(200).end(JSON.stringify({ ok: true, data: out, now: Date.now() }));
+      }
+
       const key = body.key;
       if (!ALLOWED.includes(key)) return res.status(400).end(JSON.stringify({ ok: false, reason: 'bad-key' }));
 
