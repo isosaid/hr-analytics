@@ -266,8 +266,9 @@
     <!-- ============ ОБЩИЙ ============ -->
     <section class="view active" id="view-general">
       <div class="kpi-row">
-        <div class="kpi blue"><div class="bar-accent"></div><div class="lab">Всего открытых позиций</div>
-          <div class="val" id="kpiTotal">–</div><div class="sub">заявок на подбор в выборке</div></div>
+        <div class="kpi blue"><div class="bar-accent"></div><div class="lab">Всего заявок на подбор</div>
+          <div class="val" id="kpiTotal">–</div>
+          <div class="sub">за весь период · сейчас в работе <b id="kpiActiveNow">–</b> вакансий</div></div>
         <div class="kpi amber"><div class="bar-accent"></div><div class="lab">Количество собеседований</div>
           <div class="val" id="kpiInterviews">–</div><div class="sub">кандидатов приглашено на собеседование</div></div>
         <div class="kpi green"><div class="bar-accent"></div><div class="lab">Закрытые позиции</div>
@@ -278,7 +279,7 @@
           <h3>Показатели рекрутинга по подразделениям</h3>
           <div class="card-sub">Открыто · Собеседования · Закрыто, по каждой компании холдинга</div>
           <div class="legend-row">
-            <span class="legend-item"><span class="dot blue"></span>Всего открытых позиций</span>
+            <span class="legend-item"><span class="dot blue"></span>Заявок на подбор</span>
             <span class="legend-item"><span class="dot amber"></span>Количество собеседований</span>
             <span class="legend-item"><span class="dot green"></span>Закрытые позиции</span></div>
           <div class="chart" id="chartByCompany"></div>
@@ -1079,6 +1080,9 @@ var _openVacRows=[], rowsAllOpen=0;
 function renderGeneral(rows){
   var closedCount=rows.filter(function(d){return d.status===STATUS_CLOSED;}).length;
   document.getElementById('kpiTotal').textContent=fmt(rows.length);
+  var activeNow = rows.filter(function(d){return d._openActive;}).length;
+  var actEl = document.getElementById('kpiActiveNow');
+  if(actEl) actEl.textContent = fmt(activeNow);
   document.getElementById('kpiInterviews').textContent=fmt(rows.reduce(function(a,d){return a+d._interviews;},0));
   document.getElementById('kpiClosed').textContent=fmt(closedCount);
   document.getElementById('kpiClosedPct').textContent=rows.length?(closedCount/rows.length*100).toFixed(1).replace('.',',')+'%':'–';
