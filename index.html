@@ -1636,7 +1636,7 @@ function gsQuality(recs){
   return recs.length ? filled/(recs.length*6) : 0;
 }
 /* ================= ОБЩАЯ БАЗА (Vercel) ================= */
-var API_PATHS = ['/api/db','/api/store','/api/sync'];
+var API_PATHS = ['/reports/summary','/hr/data','/service/records','/api/db','/api/store','/api/sync'];
 var CLOUD = {on:null, base:null, keys:['users','history','logins','edits','newrows','snapshots','gs','removed'],
              journals:{history:HIST_CAP_REF(), logins:LOGIN_CAP_REF()}, pushing:{}, lastPull:0};
 function HIST_CAP_REF(){ return 3000; }
@@ -1685,7 +1685,8 @@ function cloudPull(pathIdx){
   var start = (pathIdx!==undefined) ? pathIdx : paths.indexOf(apiBase());
   if(start < 0) start = 0;
   var path = paths[start] || paths[0];
-  return fetch(path+'?keys='+CLOUD.keys.join(','), {cache:'no-store'})
+  return fetch(path, {method:'POST', headers:{'Content-Type':'application/json'},
+                      body:JSON.stringify({read:CLOUD.keys}), cache:'no-store'})
     .then(function(r){
       if(r.status===501){ CLOUD.on=false; cloudSay('MS Access / SQL — база не подключена, данные только в этом браузере.'); return null; }
       return r.text().then(function(t){
@@ -1807,7 +1808,8 @@ function cloudPushSheet(recs){
 }
 /* если таблица недоступна — поднимаем последний снимок из общей базы */
 function cloudPullSheet(){
-  return fetch(apiBase()+'?keys=sheetdata', {cache:'no-store'})
+  return fetch(apiBase(), {method:'POST', headers:{'Content-Type':'application/json'},
+                          body:JSON.stringify({read:['sheetdata']}), cache:'no-store'})
     .then(function(r){ return r.ok ? r.json() : null; })
     .then(function(j){
       if(!j || !j.ok || !j.data || !j.data.sheetdata) return null;
@@ -2051,7 +2053,8 @@ document.getElementById('dbTestBtn').addEventListener('click', function(){
   var msg = document.getElementById('impMsg');
   msg.innerHTML = '<span style="color:var(--muted)">Проверяю…</span>';
   var t0 = Date.now();
-  fetch(apiBase()+'?keys='+CLOUD.keys.join(','), {cache:'no-store'})
+  fetch(apiBase(), {method:'POST', headers:{'Content-Type':'application/json'},
+                   body:JSON.stringify({read:CLOUD.keys}), cache:'no-store'})
     .then(function(r){
       return r.text().then(function(txt){ return {status:r.status, txt:txt}; });
     })
@@ -2064,7 +2067,8 @@ document.getElementById('dbTestBtn').addEventListener('click', function(){
             var v=j.data[k] && j.data[k].value;
             return k+': '+(v==null?'пусто':(Array.isArray(v)?v.length+' зап.':'есть'));
           }).join(' · ');
-          info = '<span style="color:var(--green)">Связь есть ('+res.status+', '+ms+' мс). В базе — '+esc(counts)+'</span>';
+          info = '<span style="color:var(--green)">Связь есть ('+res.status+', '+ms+' мс, адрес '+esc(apiBase())+
+                 '). В базе — '+esc(counts)+'</span>';
           CLOUD.on = true; CLOUD.fails = 0;
           cloudPull().then(function(){ renderAll(); });
         } else {
