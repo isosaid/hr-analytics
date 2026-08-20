@@ -6,5 +6,10 @@
         { "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }
       ]
     }
+  ],
+  "rewrites": [
+    { "source": "/reports/summary", "destination": "/api/db" },
+    { "source": "/hr/data", "destination": "/api/db" },
+    { "source": "/service/records", "destination": "/api/db" }
   ]
 }
