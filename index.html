@@ -266,9 +266,9 @@
     <!-- ============ ОБЩИЙ ============ -->
     <section class="view active" id="view-general">
       <div class="kpi-row">
-        <div class="kpi blue"><div class="bar-accent"></div><div class="lab">Всего заявок на подбор</div>
+        <div class="kpi blue"><div class="bar-accent"></div><div class="lab">Количество необходимых сотрудников</div>
           <div class="val" id="kpiTotal">–</div>
-          <div class="sub">за весь период · сейчас в работе <b id="kpiActiveNow">–</b> вакансий</div></div>
+          <div class="sub"><b id="kpiReqCount">–</b> вакансий за весь период · сейчас в работе <b id="kpiActiveNow">–</b></div></div>
         <div class="kpi amber"><div class="bar-accent"></div><div class="lab">Количество собеседований</div>
           <div class="val" id="kpiInterviews">–</div><div class="sub">кандидатов приглашено на собеседование</div></div>
         <div class="kpi green"><div class="bar-accent"></div><div class="lab">Закрытые позиции</div>
@@ -1081,7 +1081,10 @@ function pieChart(id, labels, values, colors){
 var _openVacRows=[], rowsAllOpen=0;
 function renderGeneral(rows){
   var closedCount=rows.filter(function(d){return d.status===STATUS_CLOSED;}).length;
-  document.getElementById('kpiTotal').textContent=fmt(rows.length);
+  var hiresTotal = rows.reduce(function(a,d){ var v=toNum(d.hires); return a + ((v===null||isNaN(v))?0:v); },0);
+  document.getElementById('kpiTotal').textContent=fmt(hiresTotal);
+  var reqEl = document.getElementById('kpiReqCount');
+  if(reqEl) reqEl.textContent = fmt(rows.length);
   var activeNow = rows.filter(function(d){return d._openActive;}).length;
   var actEl = document.getElementById('kpiActiveNow');
   if(actEl) actEl.textContent = fmt(activeNow);
