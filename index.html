@@ -61,6 +61,11 @@
   .kpi.blue .val{color:var(--blue);} .kpi.amber .val{color:var(--amber);}
   .kpi.green .val{color:var(--green);} .kpi.red .val{color:var(--red);}
   .kpi .bar-accent{position:absolute;left:0;top:0;bottom:0;width:4px;}
+  .kpi-link{cursor:pointer;transition:transform .12s, box-shadow .12s, border-color .12s;}
+  .kpi-link:hover{transform:translateY(-2px);box-shadow:0 6px 18px rgba(20,30,60,.10);border-color:#cfd6e6;}
+  .kpi-link:active{transform:translateY(0);}
+  .kpi-link::after{content:'›';position:absolute;right:14px;top:14px;font-size:18px;color:#c3c9d6;line-height:1;}
+  .kpi-link:hover::after{color:var(--blue);}
   .kpi.blue .bar-accent{background:var(--blue);} .kpi.amber .bar-accent{background:var(--amber);}
   .kpi.green .bar-accent{background:var(--green);} .kpi.red .bar-accent{background:var(--red);}
 
@@ -274,15 +279,15 @@
     <!-- ============ ОБЩИЙ ============ -->
     <section class="view active" id="view-general">
       <div class="kpi-row">
-        <div class="kpi blue"><div class="bar-accent"></div><div class="lab">Количество необходимых сотрудников</div>
+        <div class="kpi blue kpi-link" data-go="all" title="Открыть все заявки в сводной таблице"><div class="bar-accent"></div><div class="lab">Количество необходимых сотрудников</div>
           <div class="val" id="kpiTotal">–</div>
           <div class="sub"><b id="kpiReqCount">–</b> вакансий за весь период · сейчас в работе <b id="kpiActiveNow">–</b></div></div>
-        <div class="kpi amber"><div class="bar-accent"></div><div class="lab">Количество собеседований</div>
+        <div class="kpi amber kpi-link" data-go="interviews" title="Открыть заявки с собеседованиями"><div class="bar-accent"></div><div class="lab">Количество собеседований</div>
           <div class="val" id="kpiInterviews">–</div><div class="sub">кандидатов приглашено на собеседование</div></div>
-        <div class="kpi green"><div class="bar-accent"></div><div class="lab">Принято сотрудников</div>
+        <div class="kpi green kpi-link" data-go="closed" title="Открыть закрытые вакансии"><div class="bar-accent"></div><div class="lab">Принято сотрудников</div>
           <div class="val" id="kpiHired">–</div>
           <div class="sub"><b id="kpiHiredPct">–</b> от необходимого · закрыто <b id="kpiClosed">–</b> вакансий</div></div>
-        <div class="kpi red"><div class="bar-accent"></div><div class="lab">Осталось найти</div>
+        <div class="kpi red kpi-link" data-go="open" title="Открыть вакансии в работе"><div class="bar-accent"></div><div class="lab">Осталось найти</div>
           <div class="val" id="kpiLeft">–</div>
           <div class="sub">по <b id="kpiActiveVac">–</b> вакансиям в работе</div></div>
       </div>
@@ -2422,6 +2427,34 @@ function renderAll(){
   try { initGS(); } catch(e){ console.error('gs', e); }
   try { renderFooter(); } catch(e){ console.error('footer', e); }
 }
+function openTab(name){
+  document.querySelectorAll('.tab-btn').forEach(function(b){
+    b.classList.toggle('active', b.dataset.tab===name); });
+  document.querySelectorAll('.view').forEach(function(v){ v.classList.remove('active'); });
+  var view = document.getElementById('view-'+name);
+  if(view) view.classList.add('active');
+  document.getElementById('mainWrap').className = (name==='pivot') ? 'wide' : '';
+  renderAll();
+  window.scrollTo({top:0, behavior:'smooth'});
+}
+/* карточки показателей открывают соответствующую выборку */
+document.querySelectorAll('.kpi-link').forEach(function(card){
+  card.addEventListener('click', function(){
+    var go = card.dataset.go;
+    var st = document.getElementById('f-status');
+    if(go==='closed')      st.value = STATUS_CLOSED;
+    else if(go==='open')   st.value = STATUS_OPEN;
+    else                   st.value = '';
+    page = 1;
+    if(go==='interviews'){
+      activeIssue = '';
+      document.getElementById('pivotSearch').value = '';
+      document.getElementById('onlyErrors').checked = false;
+    }
+    openTab('pivot');
+  });
+});
+
 document.querySelectorAll('.tab-btn').forEach(function(btn){
   btn.addEventListener('click', function(){
     document.querySelectorAll('.tab-btn').forEach(function(b){b.classList.remove('active');});
