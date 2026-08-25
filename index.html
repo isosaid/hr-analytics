@@ -411,6 +411,7 @@
         <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:10px;font-size:12.5px;color:var(--muted)">
           <span>Показано: <b id="pivotShown">0</b> вакансий · требуется <b id="pivotNeed">0</b> чел. ·
             осталось найти <b style="color:var(--red)" id="pivotLeft">0</b></span>
+          <span id="activeTagWrap"></span>
           <span>Ошибочных ячеек: <b style="color:var(--red)" id="pivotBadCells">0</b> в <b style="color:var(--red)" id="pivotBadRows">0</b> строках</span>
           <span>Внесено правок: <b class="save-note" id="pivotEdits">0</b></span>
         </div>
@@ -1285,7 +1286,7 @@ var COLS = [
   {f:'team',         t:'TEAM'},
   {f:'note',         t:'Примечание'}
 ];
-var PAGE_SIZE = 100, page = 1, activeIssue = '';
+var PAGE_SIZE = 100, page = 1, activeIssue = '', onlyActive = false;
 
 document.getElementById('pivotHead').innerHTML =
   '<th style="width:38px">✓</th>' +
@@ -1297,6 +1298,7 @@ function pivotRows(){
   var q=(document.getElementById('pivotSearch').value||'').toLowerCase();
   var onlyErr=document.getElementById('onlyErrors').checked;
   return base.filter(function(r){
+    if(onlyActive && !r._openActive) return false;      /* только вакансии в работе */
     if(activeIssue && r._errKeys.indexOf(activeIssue)<0) return false;
     if(onlyErr && !r._errKeys.length) return false;
     if(q){
@@ -1361,6 +1363,9 @@ function renderPivot(){
 
   var rows = pivotRows();
   document.getElementById('pivotShown').textContent = fmt(rows.length);
+  var atw = document.getElementById('activeTagWrap');
+  if(atw) atw.innerHTML = onlyActive
+    ? '<span class="pill amber" id="clearActive" style="cursor:pointer">только вакансии в работе ✕</span>' : '';
   /* человек в показанной выборке: сколько требовалось и сколько ещё не закрыто */
   var pNeed = 0, pGot = 0;
   rows.forEach(function(r){
@@ -2463,8 +2468,9 @@ document.querySelectorAll('.kpi-link').forEach(function(card){
   card.addEventListener('click', function(){
     var go = card.dataset.go;
     var st = document.getElementById('f-status');
+    onlyActive = false;
     if(go==='closed')      st.value = STATUS_CLOSED;
-    else if(go==='open')   st.value = STATUS_OPEN;
+    else if(go==='open'){  st.value = ''; onlyActive = true; }   /* ровно те, что в работе */
     else                   st.value = '';
     page = 1;
     if(go==='interviews'){
@@ -2489,7 +2495,11 @@ document.querySelectorAll('.tab-btn').forEach(function(btn){
 ['f-company','f-cat','f-year','f-month','f-status'].forEach(function(id){
   document.getElementById(id).addEventListener('change', function(){ page=1; renderAll(); });
 });
+document.addEventListener('click', function(e){
+  if(e.target && e.target.id==='clearActive'){ onlyActive = false; page = 1; renderAll(); }
+});
 document.getElementById('resetBtn').addEventListener('click', function(){
+  onlyActive = false;
   ['f-company','f-cat','f-year','f-month','f-status'].forEach(function(id){ document.getElementById(id).value=''; });
   activeIssue=''; page=1; renderAll();
 });
