@@ -410,6 +410,8 @@
         </div>
         <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:10px;font-size:12.5px;color:var(--muted)">
           <span>Показано: <b id="pivotShown">0</b> вакансий · требуется <b id="pivotNeed">0</b> чел. ·
+            собеседований <b style="color:var(--amber)" id="pivotInt">0</b> ·
+            принято <b style="color:var(--green)" id="pivotHired">0</b> ·
             осталось найти <b style="color:var(--red)" id="pivotLeft">0</b></span>
           <span id="activeTagWrap"></span>
           <span>Ошибочных ячеек: <b style="color:var(--red)" id="pivotBadCells">0</b> в <b style="color:var(--red)" id="pivotBadRows">0</b> строках</span>
@@ -1286,7 +1288,20 @@ var COLS = [
   {f:'team',         t:'TEAM'},
   {f:'note',         t:'Примечание'}
 ];
-var PAGE_SIZE = 100, page = 1, activeIssue = '', onlyActive = false;
+var PAGE_SIZE = 100, page = 1, activeIssue = '', onlyActive = false, subsetMode = '';
+/* отбор строк, из которых складывается показатель на карточке */
+var SUBSETS = {
+  active:     {label:'только вакансии в работе',        test:function(r){ return r._openActive; }},
+  hired:      {label:'только записи с принятыми',       test:function(r){ return hiredOf(r) > 0; }},
+  interviews: {label:'только записи с собеседованиями', test:function(r){ return r._interviews > 0; }},
+  need:       {label:'только записи с указанной потребностью', test:function(r){ var n=toNum(r.hires); return n!==null && !isNaN(n) && n>0; }}
+};
+function hiredOf(r){
+  var need=toNum(r.hires), got=toNum(r.closed_total);
+  need=(need===null||isNaN(need))?0:need;
+  got=(got===null||isNaN(got))?0:got;
+  return need>0 ? Math.min(got,need) : got;
+}
 
 document.getElementById('pivotHead').innerHTML =
   '<th style="width:38px">✓</th>' +
@@ -1298,7 +1313,7 @@ function pivotRows(){
   var q=(document.getElementById('pivotSearch').value||'').toLowerCase();
   var onlyErr=document.getElementById('onlyErrors').checked;
   return base.filter(function(r){
-    if(onlyActive && !r._openActive) return false;      /* только вакансии в работе */
+    if(subsetMode && SUBSETS[subsetMode] && !SUBSETS[subsetMode].test(r)) return false;
     if(activeIssue && r._errKeys.indexOf(activeIssue)<0) return false;
     if(onlyErr && !r._errKeys.length) return false;
     if(q){
@@ -1364,8 +1379,8 @@ function renderPivot(){
   var rows = pivotRows();
   document.getElementById('pivotShown').textContent = fmt(rows.length);
   var atw = document.getElementById('activeTagWrap');
-  if(atw) atw.innerHTML = onlyActive
-    ? '<span class="pill amber" id="clearActive" style="cursor:pointer">только вакансии в работе ✕</span>' : '';
+  if(atw) atw.innerHTML = (subsetMode && SUBSETS[subsetMode])
+    ? '<span class="pill amber" id="clearActive" style="cursor:pointer">'+esc(SUBSETS[subsetMode].label)+' ✕</span>' : '';
   /* человек в показанной выборке: сколько требовалось и сколько ещё не закрыто */
   var pNeed = 0, pGot = 0;
   rows.forEach(function(r){
@@ -1377,7 +1392,15 @@ function renderPivot(){
   });
   var needEl = document.getElementById('pivotNeed'), leftEl = document.getElementById('pivotLeft');
   if(needEl) needEl.textContent = fmt(pNeed);
-  if(leftEl) leftEl.textContent = fmt(Math.max(0, pNeed - pGot));
+  if(leftEl){
+    /* для набора «в работе» остаток считаем как незакрытую потребность,
+       в остальных случаях показываем принятых — это ближе по смыслу */
+    leftEl.textContent = fmt(Math.max(0, pNeed - pGot));
+  }
+  var hiredEl = document.getElementById('pivotHired');
+  if(hiredEl) hiredEl.textContent = fmt(pGot);
+  var intEl = document.getElementById('pivotInt');
+  if(intEl) intEl.textContent = fmt(rows.reduce(function(a,r){ return a + (r._interviews||0); },0));
   var pages = Math.max(1, Math.ceil(rows.length/PAGE_SIZE));
   if(page>pages) page=pages;
   document.getElementById('pageNum').textContent = page;
@@ -2468,16 +2491,15 @@ document.querySelectorAll('.kpi-link').forEach(function(card){
   card.addEventListener('click', function(){
     var go = card.dataset.go;
     var st = document.getElementById('f-status');
-    onlyActive = false;
-    if(go==='closed')      st.value = STATUS_CLOSED;
-    else if(go==='open'){  st.value = ''; onlyActive = true; }   /* ровно те, что в работе */
-    else                   st.value = '';
+    st.value = '';                       /* показатели считаются по всей выборке */
+    subsetMode = (go==='closed') ? 'hired'
+               : (go==='open')   ? 'active'
+               : (go==='interviews') ? 'interviews'
+               : (go==='all')    ? 'need' : '';
+    activeIssue = '';
+    document.getElementById('pivotSearch').value = '';
+    document.getElementById('onlyErrors').checked = false;
     page = 1;
-    if(go==='interviews'){
-      activeIssue = '';
-      document.getElementById('pivotSearch').value = '';
-      document.getElementById('onlyErrors').checked = false;
-    }
     openTab('pivot');
   });
 });
@@ -2496,10 +2518,10 @@ document.querySelectorAll('.tab-btn').forEach(function(btn){
   document.getElementById(id).addEventListener('change', function(){ page=1; renderAll(); });
 });
 document.addEventListener('click', function(e){
-  if(e.target && e.target.id==='clearActive'){ onlyActive = false; page = 1; renderAll(); }
+  if(e.target && e.target.id==='clearActive'){ subsetMode = ''; page = 1; renderAll(); }
 });
 document.getElementById('resetBtn').addEventListener('click', function(){
-  onlyActive = false;
+  subsetMode = '';
   ['f-company','f-cat','f-year','f-month','f-status'].forEach(function(id){ document.getElementById(id).value=''; });
   activeIssue=''; page=1; renderAll();
 });
