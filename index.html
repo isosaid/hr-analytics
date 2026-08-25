@@ -286,7 +286,7 @@
           <div class="val" id="kpiInterviews">–</div><div class="sub">кандидатов приглашено на собеседование</div></div>
         <div class="kpi green kpi-link" data-go="closed" title="Открыть закрытые вакансии"><div class="bar-accent"></div><div class="lab">Принято сотрудников</div>
           <div class="val" id="kpiHired">–</div>
-          <div class="sub"><b id="kpiHiredPct">–</b> от необходимого · закрыто <b id="kpiClosed">–</b> вакансий</div></div>
+          <div class="sub"><b id="kpiHiredPct">–</b> от необходимого</div></div>
         <div class="kpi red kpi-link" data-go="open" title="Открыть вакансии в работе"><div class="bar-accent"></div><div class="lab">Осталось найти</div>
           <div class="val" id="kpiLeft">–</div>
           <div class="sub">по <b id="kpiActiveVac">–</b> вакансиям в работе</div></div>
@@ -1136,7 +1136,6 @@ function renderGeneral(rows){
 
   document.getElementById('kpiHired').textContent=fmt(hiredTotal);
   document.getElementById('kpiHiredPct').textContent=hiresTotal?(hiredTotal/hiresTotal*100).toFixed(1).replace('.',',')+'%':'–';
-  document.getElementById('kpiClosed').textContent=fmt(closedCount);
   document.getElementById('kpiLeft').textContent=fmt(leftTotal);
   document.getElementById('kpiActiveVac').textContent=fmt(activeVac);
 
