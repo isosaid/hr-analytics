@@ -294,7 +294,8 @@
       <div class="grid">
         <div class="card">
           <h3>Показатели рекрутинга по подразделениям</h3>
-          <div class="card-sub">Открыто · Собеседования · Закрыто, по каждой компании холдинга</div>
+          <div class="card-sub">Открыто · Собеседования · Закрыто, по основным компаниям холдинга
+            <span id="chartOmitted" style="color:var(--muted)"></span></div>
           <div class="legend-row">
             <span class="legend-item"><span class="dot blue"></span>Заявок на подбор</span>
             <span class="legend-item"><span class="dot amber"></span>Количество собеседований</span>
@@ -783,11 +784,26 @@ function normCompany(x){ if(!x) return 'Не указано'; x=String(x).trim()
 function companyKey(x){
   x = String(x||'').toLowerCase();
   x = x.replace(/[«»""„“”'`]/g,'"');
-  x = x.replace(/^\s*(ооо|оао|зао|тсрц|пп|гп|ип|чп)\s*/,'');
+  /* латинские буквы, похожие на кириллицу: «OOO» латиницей встречается в выгрузках */
+  x = x.replace(/[aoceptyxkbmh]/g, function(ch){
+    return {a:'а',o:'о',c:'с',e:'е',p:'р',t:'т',y:'у',x:'х',k:'к',b:'в',m:'м',h:'н'}[ch]; });
+  x = x.replace(/^\s*["\s]*(ооо|оао|зао|тсрц|пп|гп|ип|чп)\s*/,'');
   x = x.replace(/[^a-zа-яё0-9]+/g,' ').trim();
   return x;
 }
 /* из всех вариантов написания выбираем самый полный как отображаемый */
+/* Компании, отображаемые в диаграмме «Показатели рекрутинга по подразделениям».
+   Список задан вручную: мелкие проекты и филиалы в диаграмму не выводим. */
+var CHART_COMPANIES = ['ООО "Филиззот"','ОАО "Азот"','ООО "Авесто Групп"','ООО "КМ Муосир"','ООО "Арвис"',
+ 'ОАО "Гулистони Душанбе"','ООО "Мармари"','ООО "Комбинати Орди Душанбе"','ТСРЦ "Сиёма Молл"',
+ 'ООО "Нет Солюшенс"','ООО "Артел Авесто Электроникс"','ООО "Душанбе Сити Банк"','ПП "Сиёма"',
+ 'Акиа Авесто Автоматив Индастри','Сити Кард','ООО "Doro Pay"','ООО "Олуча Авто"','ZET-MOBILE',
+ 'ООО "Композит Т.А."','ООО "Чилтан"','Сити Лайн','Jura Taxi','ООО "ДС Маркет"','Анор','ООО "Асим"'];
+var CHART_KEYS = null;
+function inChartList(name){
+  if(!CHART_KEYS){ CHART_KEYS = {}; CHART_COMPANIES.forEach(function(n){ CHART_KEYS[companyKey(n)] = true; }); }
+  return !!CHART_KEYS[companyKey(name)];
+}
 var COMPANY_CANON = {};
 function buildCompanyRegistry(rows){
   var byKey = {};
@@ -1150,7 +1166,12 @@ function renderGeneral(rows){
   rows.forEach(function(d){
     var b=byCompany[d._company]||(byCompany[d._company]={total:0,interviews:0,closed:0});
     b.total++; b.interviews+=d._interviews; if(d.status===STATUS_CLOSED) b.closed++; });
-  var compLabels=Object.keys(byCompany).sort(function(a,b){return byCompany[b].total-byCompany[a].total;});
+  var compLabels=Object.keys(byCompany)
+    .filter(inChartList)                              /* в диаграмме только выбранные компании */
+    .sort(function(a,b){return byCompany[b].total-byCompany[a].total;});
+  var omitted = Object.keys(byCompany).filter(function(c){ return !inChartList(c); });
+  var omEl = document.getElementById('chartOmitted');
+  if(omEl) omEl.textContent = omitted.length ? ' · ещё ' + fmt(omitted.length) + ' не показаны' : '';
   hGroupedBar('chartByCompany', compLabels, [
     {data:compLabels.map(function(c){return byCompany[c].total;}),color:C.blue},
     {data:compLabels.map(function(c){return byCompany[c].interviews;}),color:C.amber},
