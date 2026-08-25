@@ -406,7 +406,7 @@
           <label class="toggle"><input type="checkbox" id="onlyErrors"> Только строки с ошибками</label>
           <button class="btn" id="undoBtn" disabled>↶ Отменить все правки</button>
           <button class="btn primary" id="addRowBtn">+ Добавить позицию</button>
-          <button class="btn primary" id="exportBtn">↓ Выгрузить исправленные данные (CSV)</button>
+          <button class="btn primary" id="exportBtn">↓ Выгрузить в CSV (<span id="exportCount">0</span>)</button>
         </div>
         <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:10px;font-size:12.5px;color:var(--muted)">
           <span>Показано: <b id="pivotShown">0</b> вакансий · требуется <b id="pivotNeed">0</b> чел. ·
@@ -1399,6 +1399,8 @@ function renderPivot(){
   }
   var hiredEl = document.getElementById('pivotHired');
   if(hiredEl) hiredEl.textContent = fmt(pGot);
+  var expEl = document.getElementById('exportCount');
+  if(expEl) expEl.textContent = fmt(rows.length);
   var intEl = document.getElementById('pivotInt');
   if(intEl) intEl.textContent = fmt(rows.reduce(function(a,r){ return a + (r._interviews||0); },0));
   var pages = Math.max(1, Math.ceil(rows.length/PAGE_SIZE));
@@ -1624,7 +1626,8 @@ function exportCSV(){
   function q(v){ if(v===null||v===undefined) return '';
     var s=String(v); return /[";\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; }
   var lines = [head.map(q).join(';')];
-  ROWS.forEach(function(r){
+  var rows = pivotRows();          /* выгружаем ровно то, что видно в таблице */
+  rows.forEach(function(r){
     var msgs=[]; for(var f in r._errCells) r._errCells[f].forEach(function(m){ if(msgs.indexOf(m)<0) msgs.push(m); });
     lines.push([r.id, r.cat, r.pos, r.dept, r.companyRaw, r._company,
       dateRu(r.open), dateRu(r.close), r._days_close, r.hires, r.interviews, r.closed_total,
@@ -1633,7 +1636,23 @@ function exportCSV(){
   var blob = new Blob(['\ufeff'+lines.join('\r\n')], {type:'text/csv;charset=utf-8;'});
   var a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = 'Отчет_проверенный.csv';
+  /* имя файла отражает выбранные фильтры */
+  var parts = [];
+  var co=document.getElementById('f-company').value, ca=document.getElementById('f-cat').value,
+      yr=document.getElementById('f-year').value, mo=document.getElementById('f-month').value,
+      st=document.getElementById('f-status').value;
+  if(isCompanyUser() && SESSION.company) parts.push(SESSION.company);
+  if(co && parts.indexOf(co)<0) parts.push(co);
+  if(ca) parts.push(ca);
+  if(mo) parts.push(mo);
+  if(yr) parts.push(yr);
+  if(st) parts.push(st===STATUS_OPEN?'открытые':'закрытые');
+  if(subsetMode && SUBSETS[subsetMode]) parts.push(SUBSETS[subsetMode].label);
+  if(activeIssue){ var ru=RULES.find(function(x){return x.key===activeIssue;}); if(ru) parts.push(ru.label); }
+  if(document.getElementById('onlyErrors').checked) parts.push('с ошибками');
+  var name = 'Отчет' + (parts.length ? ' — ' + parts.join(', ') : '');
+  a.download = name.replace(/["«»]/g,'').replace(/[\\/:*?<>|]/g,'-')
+                   .replace(/\s+/g,' ').trim().slice(0,120) + '.csv';
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1000);
 }
