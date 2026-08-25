@@ -51,7 +51,8 @@
   main.wide{max-width:none;}
   .view{display:none;} .view.active{display:block;}
 
-  .kpi-row{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:16px;}
+  .kpi-row{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px;}
+  #view-detail .kpi-row{grid-template-columns:repeat(3,1fr);}
   .kpi{background:var(--card);border-radius:var(--radius);padding:18px 20px;border:1px solid var(--line);
     position:relative;overflow:hidden;}
   .kpi .lab{font-size:12.5px;color:var(--muted);font-weight:600;margin-bottom:8px;}
@@ -271,8 +272,12 @@
           <div class="sub"><b id="kpiReqCount">–</b> вакансий за весь период · сейчас в работе <b id="kpiActiveNow">–</b></div></div>
         <div class="kpi amber"><div class="bar-accent"></div><div class="lab">Количество собеседований</div>
           <div class="val" id="kpiInterviews">–</div><div class="sub">кандидатов приглашено на собеседование</div></div>
-        <div class="kpi green"><div class="bar-accent"></div><div class="lab">Закрытые позиции</div>
-          <div class="val" id="kpiClosed">–</div><div class="sub"><span id="kpiClosedPct">–</span> от всех заявок в выборке</div></div>
+        <div class="kpi green"><div class="bar-accent"></div><div class="lab">Принято сотрудников</div>
+          <div class="val" id="kpiHired">–</div>
+          <div class="sub"><b id="kpiHiredPct">–</b> от необходимого · закрыто <b id="kpiClosed">–</b> вакансий</div></div>
+        <div class="kpi red"><div class="bar-accent"></div><div class="lab">Осталось найти</div>
+          <div class="val" id="kpiLeft">–</div>
+          <div class="sub">по <b id="kpiActiveVac">–</b> вакансиям в работе</div></div>
       </div>
       <div class="grid">
         <div class="card">
@@ -655,7 +660,11 @@ function getUsers(){
 function saveUsers(u){ DB.set('users', u); }
 var SESSION = null;
 function isAdmin(){ return SESSION && SESSION.role==='admin'; }
-function canEdit(){ return SESSION && (SESSION.role==='admin' || SESSION.role==='staff'); }
+/* правка своих данных: администратор, сотрудник Авесто и аккаунт компании
+   (компания видит только свои строки, поэтому правит только их) */
+function canEdit(){ return SESSION && (SESSION.role==='admin' || SESSION.role==='staff' || SESSION.role==='company'); }
+/* операции над всей базой: обновление из таблицы, версии, массовая отмена */
+function canManageData(){ return SESSION && (SESSION.role==='admin' || SESSION.role==='staff'); }
 function isCompanyUser(){ return SESSION && SESSION.role==='company'; }
 
 /* журнал входов */
@@ -1089,8 +1098,22 @@ function renderGeneral(rows){
   var actEl = document.getElementById('kpiActiveNow');
   if(actEl) actEl.textContent = fmt(activeNow);
   document.getElementById('kpiInterviews').textContent=fmt(rows.reduce(function(a,d){return a+d._interviews;},0));
+
+  /* принято людей: по каждой заявке не больше, чем требовалось */
+  var hiredTotal = rows.reduce(function(a,d){
+    var need=toNum(d.hires), got=toNum(d.closed_total);
+    need=(need===null||isNaN(need))?0:need;
+    got=(got===null||isNaN(got))?0:got;
+    return a + (need>0 ? Math.min(got,need) : got);
+  },0);
+  var leftTotal = Math.max(0, hiresTotal - hiredTotal);
+  var activeVac = rows.filter(function(d){return d._openActive;}).length;
+
+  document.getElementById('kpiHired').textContent=fmt(hiredTotal);
+  document.getElementById('kpiHiredPct').textContent=hiresTotal?(hiredTotal/hiresTotal*100).toFixed(1).replace('.',',')+'%':'–';
   document.getElementById('kpiClosed').textContent=fmt(closedCount);
-  document.getElementById('kpiClosedPct').textContent=rows.length?(closedCount/rows.length*100).toFixed(1).replace('.',',')+'%':'–';
+  document.getElementById('kpiLeft').textContent=fmt(leftTotal);
+  document.getElementById('kpiActiveVac').textContent=fmt(activeVac);
 
   var byCompany={};
   rows.forEach(function(d){
@@ -1441,7 +1464,7 @@ document.getElementById('pivotBody').addEventListener('keydown', function(e){
 });
 
 document.getElementById('addRowBtn').addEventListener('click', function(){
-  if(!canEdit()){ alert('Добавлять позиции могут только сотрудники Авесто и администратор.'); return; }
+  if(!canEdit()){ alert('Недостаточно прав для добавления позиции.'); return; }
   var maxI = 900000, maxId = 0;
   ROWS.forEach(function(r){
     if(r.i>=900000 && r.i>=maxI) maxI = r.i+1;
@@ -1493,7 +1516,7 @@ function deleteRowById(i){
 });
 
 document.getElementById('undoBtn').addEventListener('click', function(){
-  if(!canEdit()){ alert('Недостаточно прав для отмены правок.'); return; }
+  if(!canManageData()){ alert('Массовая отмена правок доступна сотрудникам Авесто и администратору.'); return; }
   if(!confirm('Отменить все внесённые правки и вернуть исходные значения из файла?')) return;
   var n = Object.keys(EDITS).length;
   EDITS = {}; persistEdits(); applyEdits();
@@ -1897,7 +1920,7 @@ function gsFetchData(silent){
     return Promise.resolve(null);
   }
   if(!silent){
-    if(!canEdit()){ if(msg) msg.innerHTML='<span style="color:var(--red)">Обновлять данные могут сотрудники Авесто и администратор.</span>';
+    if(!canManageData()){ if(msg) msg.innerHTML='<span style="color:var(--red)">Обновлять данные могут сотрудники Авесто и администратор.</span>';
       return Promise.reject(new Error('нет прав')); }
     if(hadLocal && !confirm('Данные будут заменены содержимым Google-таблицы.\n'+
         'Локальные правки ('+hadLocal+') будут отменены. Журналы сохранятся. Продолжить?')) return Promise.resolve(null);
@@ -1989,7 +2012,7 @@ function initGS(){
   var cfg = DB.get('gs', null) || GS_DEFAULT;
   document.getElementById('gsId').value = cfg.id || GS_DEFAULT.id;
   document.getElementById('gsSheet').value = (cfg.sheet!==undefined? cfg.sheet : GS_DEFAULT.sheet);
-  document.getElementById('gsCard').style.display = canEdit() ? '' : 'none';
+  document.getElementById('gsCard').style.display = canManageData() ? '' : 'none';
   if(cfg.when) document.getElementById('gsMsg').innerHTML =
     '<span style="color:var(--muted)">Последнее обновление: '+esc(cfg.when)+' · '+fmt(cfg.rows||0)+' строк.</span>';
   document.getElementById('gsAuto').value = String(DB.get('gsauto', 3));
@@ -2083,7 +2106,7 @@ function renderHistory(){
     ? snaps.map(function(s,idx){
         return '<tr><td>'+esc(s.name)+'</td><td>'+esc(s.user)+'</td><td class="when">'+esc(s.when)+'</td>'+
           '<td class="num">'+fmt(Object.keys(s.edits||{}).length)+'</td>'+
-          '<td>'+(canEdit()?'<button class="btn" data-restore="'+idx+'" style="padding:3px 9px;font-size:11.5px">Вернуться</button> '+
+          '<td>'+(canManageData()?'<button class="btn" data-restore="'+idx+'" style="padding:3px 9px;font-size:11.5px">Вернуться</button> '+
             '<button class="btn" data-delsnap="'+idx+'" style="padding:3px 9px;font-size:11.5px">Удалить</button>':'')+'</td></tr>';
       }).join('')
     : '<tr><td colspan="5" class="empty-note">Версии пока не сохранялись</td></tr>';
@@ -2246,7 +2269,7 @@ document.getElementById('clearHistBtn').addEventListener('click', function(){
 });
 
 document.getElementById('snapBtn').addEventListener('click', function(){
-  if(!canEdit()){ alert('Сохранение версий доступно сотрудникам Авесто и администратору.'); return; }
+  if(!canManageData()){ alert('Сохранение версий доступно сотрудникам Авесто и администратору.'); return; }
   var nm = (document.getElementById('snapName').value||'').trim() || ('Версия от '+nowStr());
   var snaps = getSnaps();
   snaps.unshift({name:nm, user:SESSION.login, when:nowStr(), ts:new Date().toISOString(),
@@ -2258,7 +2281,7 @@ document.getElementById('snapBtn').addEventListener('click', function(){
 });
 
 document.getElementById('snapBody').addEventListener('click', function(e){
-  if(!canEdit()) return;
+  if(!canManageData()) return;
   var t = e.target.closest && e.target.closest('button');
   if(!t) return;
   var snaps = getSnaps();
