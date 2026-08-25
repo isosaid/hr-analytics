@@ -140,9 +140,16 @@
     text-overflow:ellipsis;cursor:text;border:2px solid transparent;border-radius:5px;}
   td .cell:hover{background:#eef1ff;}
   td .cell:focus{outline:none;border-color:var(--blue);background:#fff;white-space:normal;}
+  /* редактируемые ячейки видно сразу: пунктирная рамка и курсор ввода */
+  td .cell[contenteditable]{border-color:#dfe3ee;border-style:dashed;cursor:text;background:#fcfdff;}
+  td .cell[contenteditable]:hover{border-color:var(--blue);border-style:solid;background:#eef1ff;}
+  td .cell[contenteditable]:focus{border-style:solid;}
+  td.editable{cursor:text;}
   td .cell-inp{font-family:inherit;font-size:12.5px;background:transparent;color:inherit;
     width:100%;min-width:96px;border:2px solid transparent;border-radius:5px;padding:6px 7px;}
-  td .cell-inp:hover{background:#eef1ff;}
+  td .cell-inp{border-color:#dfe3ee;border-style:dashed;background:#fcfdff;}
+  td .cell-inp:hover{background:#eef1ff;border-color:var(--blue);border-style:solid;}
+  td .cell-inp:focus{border-style:solid;}
   td .cell-inp:focus{outline:none;border-color:var(--blue);background:#fff;}
   td input.cell-inp[type=number]{text-align:right;font-variant-numeric:tabular-nums;font-weight:600;}
   td.err .cell-inp{background:var(--red-soft);border-color:#f6b8ad;color:#a8291a;}
@@ -387,6 +394,7 @@
     <section class="view" id="view-pivot">
       <div class="card" style="margin-bottom:14px">
         <h3>Сводная таблица заявок · проверка качества данных</h3>
+        <div class="card-sub" id="editHint"></div>
         <div class="issue-chips" id="issueChips"></div>
         <div class="editor-toolbar">
           <input type="text" id="pivotSearch" placeholder="Поиск по подразделению, позиции, отделу, ФИО…">
@@ -1315,7 +1323,16 @@ function cellValue(r, col){
   return String(v);
 }
 
+function setEditHint(){
+  var el = document.getElementById('editHint');
+  if(!el) return;
+  el.innerHTML = canEdit()
+    ? 'Нажмите на любую ячейку, чтобы изменить значение — правки сохраняются сразу.' +
+      (isCompanyUser() ? ' Вам доступны только данные вашей компании.' : '')
+    : 'Просмотр без права редактирования.';
+}
 function renderPivot(){
+  setEditHint();
   var base = applyFilters();
   var badRows = renderChips(base);
   var badCells = base.reduce(function(a,r){ return a + Object.keys(r._errCells).length; },0);
@@ -1379,7 +1396,8 @@ function renderPivot(){
         inner = '<span class="cell"'+(ro?'':' contenteditable="true" spellcheck="false"')+attrs+'>'+
                 esc(cellValue(r,col))+'</span>';
       }
-      return '<td class="'+cls+'"'+(title?' title="'+esc(title)+'"':'')+'>'+inner+'</td>';
+      var tdCls = cls + (ro ? '' : ' editable');
+      return '<td class="'+tdCls+'"'+(title?' title="'+esc(title)+'"':'')+'>'+inner+'</td>';
     }).join('');
     var msgs = [];
     for(var f in r._errCells) r._errCells[f].forEach(function(m){ if(msgs.indexOf(m)<0) msgs.push(m); });
@@ -1441,6 +1459,24 @@ function commitCell(el){
   renderAll();
 }
 document.getElementById('pivotBody').addEventListener('focusout', function(e){ commitCell(e.target); });
+/* клик в любое место ячейки открывает её для правки, а не только точное попадание в поле */
+document.getElementById('pivotBody').addEventListener('click', function(e){
+  if(!canEdit()) return;
+  var t = e.target;
+  if(t.classList && (t.classList.contains('cell') || t.classList.contains('cell-inp'))) return;
+  if(t.closest && t.closest('button')) return;
+  var td = t.closest && t.closest('td.editable');
+  if(!td) return;
+  var f = td.querySelector('.cell[contenteditable], .cell-inp');
+  if(!f) return;
+  f.focus();
+  if(f.hasAttribute && f.hasAttribute('contenteditable')){
+    try{
+      var r = document.createRange(); r.selectNodeContents(f); r.collapse(false);
+      var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+    }catch(err){}
+  }
+});
 /* стрелки счётчика и выбор даты меняют значение без потери фокуса */
 document.getElementById('pivotBody').addEventListener('change', function(e){
   if(e.target && e.target.classList && e.target.classList.contains('cell-inp')) commitCell(e.target);
