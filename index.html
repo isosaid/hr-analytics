@@ -521,12 +521,18 @@
 
           <div class="card" id="usersCard">
             <h3>Пользователи</h3>
-            <div class="card-sub">Роль «Администратор» может править данные и управлять доступом, «Наблюдатель» — только смотреть.</div>
+            <div class="card-sub">«Компания» видит и правит только свои данные, «Сотрудник Авесто» — весь холдинг,
+              «Администратор» дополнительно управляет доступом, «Наблюдатель» — только смотрит.</div>
             <div class="editor-toolbar">
-              <input type="text" id="newUserLogin" placeholder="Логин">
+              <input type="text" id="newUserLogin" placeholder="Логин или почта">
               <input type="text" id="newUserPass" placeholder="Пароль">
               <select id="newUserRole" style="border:1.5px solid var(--line);border-radius:9px;padding:8px 10px;font-family:inherit;font-size:13px">
-                <option value="viewer">Наблюдатель</option><option value="staff">Сотрудник Авесто</option><option value="admin">Администратор</option></select>
+                <option value="company">Компания</option>
+                <option value="viewer">Наблюдатель</option>
+                <option value="staff">Сотрудник Авесто</option>
+                <option value="admin">Администратор</option></select>
+              <select id="newUserCompany" style="border:1.5px solid var(--line);border-radius:9px;padding:8px 10px;font-family:inherit;font-size:13px;min-width:200px">
+                <option value="">— выберите компанию —</option></select>
               <button class="btn primary" id="addUserBtn">Добавить</button>
               <button class="btn" id="expUsersBtn">↓ Выгрузить список доступов</button>
             </div>
@@ -2221,6 +2227,7 @@ function renderHistory(){
 
   var users = getUsers();
   document.getElementById('usersCard').style.display = isAdmin() ? '' : 'none';
+  fillCompanyPicker();
   document.getElementById('usersBody').innerHTML = users.map(function(u,idx){
     var roleName = u.role==='admin'?'Администратор'
       :u.role==='staff'?'Сотрудник Авесто'
@@ -2408,21 +2415,62 @@ document.getElementById('snapBody').addEventListener('click', function(e){
   }
 });
 
+/* список компаний для новой учётной записи: берём из данных плюс уже заведённые */
+function fillCompanyPicker(){
+  var sel = document.getElementById('newUserCompany');
+  if(!sel) return;
+  var keep = sel.value;
+  var names = {};
+  ROWS.forEach(function(r){ if(r._company) names[r._company] = true; });
+  getUsers().forEach(function(u){ if(u.company) names[u.company] = true; });
+  var list = Object.keys(names).sort(function(a,b){ return a.localeCompare(b,'ru'); });
+  sel.innerHTML = '<option value="">— выберите компанию —</option>' +
+    list.map(function(n){ return '<option value="'+esc(n)+'">'+esc(n)+'</option>'; }).join('') +
+    '<option value="__new">+ другая компания…</option>';
+  if(keep && list.indexOf(keep)>=0) sel.value = keep;
+}
+function syncCompanyPicker(){
+  var role = document.getElementById('newUserRole').value;
+  var sel = document.getElementById('newUserCompany');
+  if(sel) sel.style.display = (role==='company') ? '' : 'none';
+}
+document.getElementById('newUserRole').addEventListener('change', syncCompanyPicker);
+document.getElementById('newUserCompany').addEventListener('change', function(){
+  if(this.value === '__new'){
+    var name = prompt('Название компании — так, как оно записано в колонке «Подразделение» Google-таблицы:');
+    name = (name||'').trim();
+    if(name){
+      var o = document.createElement('option');
+      o.value = name; o.textContent = name;
+      this.insertBefore(o, this.options[this.options.length-1]);
+      this.value = name;
+    } else this.value = '';
+  }
+});
+
 document.getElementById('addUserBtn').addEventListener('click', function(){
   var msg = document.getElementById('userMsg');
   if(!isAdmin()){ msg.innerHTML='<span style="color:var(--red)">Недостаточно прав.</span>'; return; }
   var l = (document.getElementById('newUserLogin').value||'').trim();
   var p = (document.getElementById('newUserPass').value||'').trim();
   var role = document.getElementById('newUserRole').value;
+  var comp = (document.getElementById('newUserCompany').value||'').trim();
   if(l.length<3 || p.length<4){
     msg.innerHTML='<span style="color:var(--red)">Логин от 3 символов, пароль от 4.</span>'; return; }
+  if(role==='company' && !comp){
+    msg.innerHTML='<span style="color:var(--red)">Выберите компанию для этой учётной записи.</span>'; return; }
   var users = getUsers();
   if(users.some(function(u){return u.login.toLowerCase()===l.toLowerCase();})){
     msg.innerHTML='<span style="color:var(--red)">Такой логин уже есть.</span>'; return; }
-  users.push({login:l, hash:hashPass(p), role:role, created:new Date().toISOString()});
+  var rec = {login:l, hash:hashPass(p), role:role, created:new Date().toISOString()};
+  if(role==='company') rec.company = comp;
+  users.push(rec);
   saveUsers(users); unmarkRemoved(l);
+  logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
+    fieldLabel:'Добавлен пользователь', before:'—', after:l+(comp?' · '+comp:'')});
   document.getElementById('newUserLogin').value=''; document.getElementById('newUserPass').value='';
-  msg.innerHTML='<span style="color:var(--green)">Пользователь «'+esc(l)+'» добавлен.</span>';
+  msg.innerHTML='<span style="color:var(--green)">Пользователь «'+esc(l)+'» добавлен'+
+    (role==='company'?' для компании «'+esc(comp)+'»':'')+'.</span>';
   renderHistory();
 });
 document.getElementById('expUsersBtn').addEventListener('click', function(){
@@ -2490,7 +2538,7 @@ function renderAll(){
   /* блоки сами берут свой набор данных; фильтр статуса решает, какие из них показывать */
   try { renderDetail(applyFilters({ignoreStatus:true})); applyDetailVisibility(); } catch(e){ console.error('detail', e); }
   try { renderPivot(); } catch(e){ console.error('pivot', e); }
-  try { renderHistory(); } catch(e){ console.error('history', e); }
+  try { renderHistory(); syncCompanyPicker(); } catch(e){ console.error('history', e); }
   try { initGS(); } catch(e){ console.error('gs', e); }
   try { renderFooter(); } catch(e){ console.error('footer', e); }
 }
