@@ -303,7 +303,7 @@
           <div class="chart" id="chartByCompany"></div>
         </div>
         <div class="card">
-          <h3>Открытые вакансии по всему холдингу</h3>
+          <h3 id="openVacTitle">Открытые вакансии по всему холдингу</h3>
           <div class="card-sub"><b id="openVacCount">–</b> вакансий в работе ·
             требуется <b id="openVacHires">–</b> чел. · принято <b id="openVacDone">–</b> ·
             осталось найти <b style="color:var(--red)" id="openVacLeft">–</b>
@@ -432,12 +432,12 @@
 
     <!-- ============ ИСТОРИЯ ============ -->
     <section class="view" id="view-history">
-      <div class="kpi-row">
-        <div class="kpi blue"><div class="bar-accent"></div><div class="lab">Записей в журнале</div>
-          <div class="val" id="hKpiTotal">–</div><div class="sub">все правки, сохранённые в базе</div></div>
+      <div class="kpi-row" id="hKpiRow">
+        <div class="kpi blue"><div class="bar-accent"></div><div class="lab" id="hKpiTotalLab">Записей в журнале</div>
+          <div class="val" id="hKpiTotal">–</div><div class="sub" id="hKpiTotalSub">все правки, сохранённые в базе</div></div>
         <div class="kpi green"><div class="bar-accent"></div><div class="lab">Действующих правок</div>
-          <div class="val" id="hKpiEdits">–</div><div class="sub">ячеек отличается от исходного файла</div></div>
-        <div class="kpi amber"><div class="bar-accent"></div><div class="lab">Сохранённых версий</div>
+          <div class="val" id="hKpiEdits">–</div><div class="sub" id="hKpiEditsSub">ячеек отличается от исходного файла</div></div>
+        <div class="kpi amber" id="hKpiSnapsCard"><div class="bar-accent"></div><div class="lab">Сохранённых версий</div>
           <div class="val" id="hKpiSnaps">–</div><div class="sub">снимков состояния данных</div></div>
       </div>
 
@@ -461,7 +461,7 @@
       </div>
 
       <div class="grid">
-        <div class="card">
+        <div class="card" id="histCard">
           <h3>Журнал изменений</h3>
           <div class="card-sub">Кто, когда и что изменил. Любую правку можно откатить.</div>
           <div class="editor-toolbar">
@@ -474,7 +474,7 @@
         </div>
 
         <div>
-          <div class="card">
+          <div class="card" id="snapCard">
             <h3>Версии данных</h3>
             <div class="card-sub">Снимок сохраняет текущее состояние всех правок. К нему можно вернуться в любой момент.</div>
             <div class="editor-toolbar">
@@ -2233,9 +2233,24 @@ function renderLogins(){
     : '<tr><td colspan="6" class="empty-note">Записей о входах пока нет</td></tr>';
 }
 
+/* принадлежит ли запись журнала данным текущей учётной записи компании */
+function histIsMine(h){
+  if(!isCompanyUser()) return true;
+  if(h.user === SESSION.login) return true;              /* собственная правка */
+  if(h.bulk) return false;                                /* операции по всему холдингу */
+  if(h.i == null) return false;
+  var scope = sessionCompanies().map(companyKey);
+  var row = ROWS.filter(function(r){ return r.i === h.i; })[0];
+  if(!row) return false;
+  return scope.indexOf(companyKey(row._company)) >= 0;
+}
 function renderRecon(){
   var body = document.getElementById('reconBody');
   if(!body) return;
+  /* сверка по всему холдингу — только для Авесто и администратора */
+  var card = document.getElementById('reconCard');
+  if(card) card.style.display = isAdmin() ? '' : 'none';
+  if(!isAdmin()) return;
   var q = (document.getElementById('reconSearch').value||'').toLowerCase();
   var agg = {};
   ROWS.forEach(function(r){
@@ -2259,16 +2274,35 @@ function renderRecon(){
   }).join('') : '<tr><td colspan="5" class="empty-note">Ничего не найдено</td></tr>';
 }
 function renderHistory(){
-  var hist = getHist();
+  var hist = getHist().filter(histIsMine);      /* компания видит только свои записи */
   var q = (document.getElementById('histSearch').value||'').toLowerCase();
   var shown = hist.filter(function(h){
     if(!q) return true;
     return [h.user,h.fieldLabel,h.before,h.after,h.id].join(' ').toLowerCase().indexOf(q)>=0;
   });
   document.getElementById('hKpiTotal').textContent = fmt(hist.length);
-  document.getElementById('hKpiEdits').textContent = fmt(Object.keys(EDITS).length);
+
+  /* действующие правки: у компании — только по её строкам */
+  var editKeys = Object.keys(EDITS);
+  if(isCompanyUser()){
+    var sc = sessionCompanies().map(companyKey);
+    editKeys = editKeys.filter(function(k){
+      var idx = parseInt(String(k).split(':')[0], 10);
+      var row = ROWS.filter(function(r){ return r.i === idx; })[0];
+      return row && sc.indexOf(companyKey(row._company)) >= 0;
+    });
+  }
+  document.getElementById('hKpiEdits').textContent = fmt(editKeys.length);
+
   var snaps = getSnaps();
   document.getElementById('hKpiSnaps').textContent = fmt(snaps.length);
+
+  /* журнал изменений, версии данных и сверка — только администратор;
+     остальным на вкладке «История» остаётся журнал входов */
+  ['histCard','snapCard','reconCard','hKpiRow'].forEach(function(id){
+    var el = document.getElementById(id);
+    if(el) el.style.display = isAdmin() ? '' : 'none';
+  });
 
   document.getElementById('histBody').innerHTML = shown.length
     ? shown.slice(0,400).map(function(h,idx){
@@ -2276,7 +2310,7 @@ function renderHistory(){
           '<td>'+(h.bulk?'—':esc(h.id==null?'':h.id))+'</td><td>'+esc(h.fieldLabel||h.field||'')+'</td>'+
           '<td><span class="val-old">'+esc(h.before===null||h.before===undefined||h.before===''?'пусто':h.before)+
           '</span> → <span class="val-new">'+esc(h.after===null||h.after===undefined||h.after===''?'пусто':h.after)+'</span></td>'+
-          '<td>'+((!h.bulk && canEdit())?'<button class="btn" data-revert="'+hist.indexOf(h)+'" style="padding:3px 9px;font-size:11.5px">Откатить</button>':'')+'</td></tr>';
+          '<td>'+((!h.bulk && canEdit())?'<button class="btn" data-revert="'+esc(h.uid||'')+'" style="padding:3px 9px;font-size:11.5px">Откатить</button>':'')+'</td></tr>';
       }).join('')
     : '<tr><td colspan="6" class="empty-note">Изменений пока нет</td></tr>';
 
@@ -2368,8 +2402,14 @@ document.getElementById('clearLoginBtn').addEventListener('click', function(){
   DB.set('logins', []); renderLogins();
 });
 document.getElementById('expLogBtn').addEventListener('click', function(){
+  /* компания выгружает только своё: свои входы и правки по своим заявкам */
+  var logins = getLogins(), hist = getHist();
+  if(isCompanyUser()){
+    logins = logins.filter(function(x){ return x.login===SESSION.login; });
+    hist = hist.filter(histIsMine);
+  }
   var pack = {kind:'hr-analytics-journals', device:getDeviceId(), exported:new Date().toISOString(),
-    logins:getLogins(), history:getHist()};
+    logins:logins, history:hist};
   var blob = new Blob([JSON.stringify(pack)], {type:'application/json'});
   var a = document.createElement('a'); a.href=URL.createObjectURL(blob);
   a.download = 'HR-Analytics_журналы_'+getDeviceId()+'.json';
@@ -2417,8 +2457,9 @@ function mergeByUid(key, incoming, cap){
 document.getElementById('histBody').addEventListener('click', function(e){
   var b = e.target.closest && e.target.closest('button[data-revert]');
   if(!b || !canEdit()) return;
-  var hist = getHist(), h = hist[+b.dataset.revert];
-  if(!h) return;
+  var uid = b.dataset.revert;
+  var h = getHist().filter(function(x){ return String(x.uid)===uid; })[0];
+  if(!h || !histIsMine(h)) return;      /* чужую правку откатить нельзя */
   if(h.field==='__row'){ alert('Добавление и удаление заявок откатывается кнопкой «Удалить» в самой строке.'); return; }
   var row = ROWS.find(function(r){ return r.i===h.i; });
   if(!row) return;
@@ -2599,6 +2640,11 @@ function renderFooter(){
 function renderAll(){
   var rows = applyFilters();
   document.getElementById('rowCountTag').textContent = fmt(rows.length)+' заявок';
+  /* учётка компании видит только свои строки — заголовок не должен обещать холдинг */
+  var ovt = document.getElementById('openVacTitle');
+  if(ovt) ovt.textContent = isCompanyUser()
+    ? 'Открытые вакансии · ' + sessionCompanies().join(' · ')
+    : 'Открытые вакансии по всему холдингу';
   try { renderGeneral(rows); } catch(e){ console.error('general', e); }
   /* блоки сами берут свой набор данных; фильтр статуса решает, какие из них показывать */
   try { renderDetail(applyFilters({ignoreStatus:true})); applyDetailVisibility(); } catch(e){ console.error('detail', e); }
