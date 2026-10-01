@@ -1160,9 +1160,14 @@ function pieChart(id, labels, values, colors){
   values.forEach(function(v,i){
     if(v<=0) return;
     var frac=v/total, a1=a0+frac*2*Math.PI;
-    var x0=cx+r*Math.cos(a0), y0=cy+r*Math.sin(a0), x1=cx+r*Math.cos(a1), y1=cy+r*Math.sin(a1);
-    var d='M '+cx+' '+cy+' L '+x0.toFixed(2)+' '+y0.toFixed(2)+' A '+r+' '+r+' 0 '+(frac>0.5?1:0)+' 1 '+x1.toFixed(2)+' '+y1.toFixed(2)+' Z';
-    out.push('<path d="'+d+'" fill="'+colors[i]+'" stroke="#fff" stroke-width="2"/>');
+    if(frac>=0.9999){
+      /* одна категория на 100%: дуга начиналась и кончалась в одной точке и не рисовалась — рисуем круг */
+      out.push(svgEl('circle',{cx:cx,cy:cy,r:r,fill:colors[i],stroke:'#fff','stroke-width':2}));
+    } else {
+      var x0=cx+r*Math.cos(a0), y0=cy+r*Math.sin(a0), x1=cx+r*Math.cos(a1), y1=cy+r*Math.sin(a1);
+      var d='M '+cx+' '+cy+' L '+x0.toFixed(2)+' '+y0.toFixed(2)+' A '+r+' '+r+' 0 '+(frac>0.5?1:0)+' 1 '+x1.toFixed(2)+' '+y1.toFixed(2)+' Z';
+      out.push('<path d="'+d+'" fill="'+colors[i]+'" stroke="#fff" stroke-width="2"/>');
+    }
     if(frac>=0.06){ var am=(a0+a1)/2;
       out.push(svgEl('text',{x:(cx+r*0.62*Math.cos(am)).toFixed(1),y:(cy+r*0.62*Math.sin(am)).toFixed(1),
         'text-anchor':'middle','font-size':11.5,'font-weight':800,fill:'#fff'},(frac*100).toFixed(1).replace('.',',')+'%')); }
