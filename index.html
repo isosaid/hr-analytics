@@ -2742,6 +2742,26 @@ function restoreEditsFromHistory(){
   persistEdits(); assignKeys(); applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
   return {restored:ok, skipped:skip, same:same, total:hist.length};
 }
+/* если правки потеряны, а журнал цел — собираем их заново сами, без кнопки */
+var AUTOFIX_DONE = false;
+function restorableCount(){
+  return getHist().filter(function(h){
+    return !h.bulk && h.field && h.field!=='__row' && (h.k || h.i!=null || h.id!=null);
+  }).length;
+}
+function maybeAutoRestore(){
+  if(AUTOFIX_DONE || !SESSION) return;
+  var have = Object.keys(EDITS).length, can = restorableCount();
+  if(can < have + 20) return;              /* потери нет — не трогаем */
+  AUTOFIX_DONE = true;
+  var r = restoreEditsFromHistory();
+  if(!r.restored) return;
+  logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
+    fieldLabel:'Восстановление правок из журнала', before:have+' правок', after:r.restored+' правок'});
+  var m = document.getElementById('impMsg');
+  if(m) m.innerHTML = '<span style="color:var(--green)">Правки восстановлены из журнала: '+r.restored+'.</span>';
+  renderHistory();
+}
 document.getElementById('restoreEditsBtn').addEventListener('click', function(){
   if(!isAdmin()){ alert('Восстановление доступно администратору.'); return; }
   var n = getHist().filter(function(h){ return !h.bulk && h.field && h.field!=='__row'; }).length;
@@ -3011,6 +3031,9 @@ function startApp(user){
   if(!DB.ok) console.warn('localStorage недоступен — история не сохранится между сессиями');
   refreshFilterOptions();
   renderAll();
+  /* данные из базы и таблицы приходят не сразу — проверяем потерю чуть позже */
+  setTimeout(function(){ try{ maybeAutoRestore(); }catch(e){ console.error('autofix', e); } }, 7000);
+  setTimeout(function(){ try{ maybeAutoRestore(); }catch(e){ console.error('autofix', e); } }, 20000);
   /* сначала поднимаем правки из общей базы, и только потом тянем таблицу —
      иначе чистый браузер успевал записать пустые правки поверх общих */
   function bootSheet(){ try { gsBoot(); } catch(e){ console.error('gsBoot', e); } }
