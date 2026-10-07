@@ -467,6 +467,7 @@
           <div class="card-sub">Кто, когда и что изменил. Любую правку можно откатить.</div>
           <div class="editor-toolbar">
             <input type="text" id="histSearch" placeholder="Поиск по пользователю, полю, значению…">
+            <button class="btn primary" id="restoreEditsBtn">↻ Восстановить правки из журнала</button>
             <button class="btn" id="clearHistBtn">Очистить журнал</button>
           </div>
           <div class="scroll-box" style="max-height:520px"><table class="dt hist-tbl">
@@ -1735,7 +1736,7 @@ function commitCell(el){
   }
   var col = COLS.find(function(c){ return c.f===f; }) || {t:f, type:type};
   logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login,
-    i:i, id:row.id, field:f, fieldLabel:col.t,
+    i:i, id:row.id, k:row._k, field:f, fieldLabel:col.t,
     before:(col.type==='date'?dateRu(before):beforeCmp),
     after:(col.type==='date'?dateRu(next):nextCmp)});
   rebuild();
@@ -2487,6 +2488,8 @@ function renderHistory(){
 
   /* журнал изменений, версии данных и сверка — только администратор;
      остальным на вкладке «История» остаётся журнал входов */
+  var rb = document.getElementById('restoreEditsBtn');
+  if(rb) rb.style.display = isAdmin() ? '' : 'none';
   ['histCard','snapCard','reconCard','hKpiRow'].forEach(function(id){
     var el = document.getElementById(id);
     if(el) el.style.display = isAdmin() ? '' : 'none';
@@ -2672,6 +2675,87 @@ document.getElementById('histBody').addEventListener('click', function(e){
   rebuild(); refreshFilterOptions(); renderAll();
 });
 
+/* ---- восстановление правок из журнала ----
+   журнал хранит каждую правку (кто, какая строка, поле, было → стало),
+   поэтому по нему можно заново собрать набор правок, если он потерялся */
+function restoreEditsFromHistory(){
+  var hist = getHist().filter(function(h){
+    return !h.bulk && h.field && h.field!=='__row' && (h.k || h.i!=null || h.id!=null);
+  }).slice().sort(function(a,b){ return String(a.ts||'').localeCompare(String(b.ts||'')); });
+
+  var byId = {};
+  ROWS.forEach(function(r){ var k=String(r.id); (byId[k]=byId[k]||[]).push(r); });
+  var srcByKey = {};
+  RAW.forEach(function(r){ srcByKey[r._k] = r; });
+
+  /* компании автора правки: номера заявок повторяются у разных предприятий,
+     поэтому круг кандидатов сужаем по тому, кто правил */
+  var userScope = {};
+  getUsers().forEach(function(u){
+    var list = (u.companies && u.companies.length) ? u.companies : (u.company ? [u.company] : null);
+    if(list) userScope[String(u.login).toLowerCase()] = list.map(companyKey);
+  });
+  function sameVal(h, r, useCurrent){
+    var col = COLS.filter(function(c){ return c.f===h.field; })[0] || {};
+    var src = useCurrent ? r : (srcByKey[r._k] || {});
+    var v = col.type==='date' ? dateRu(src[h.field]) : (src[h.field]==null?null:String(src[h.field]));
+    return String(v==null?'':v) === String(h.before==null?'':h.before);
+  }
+  function pickRow(h){
+    if(h.k){ var direct = resolveRow(h.k); if(direct) return direct; }
+    var cand = (byId[String(h.id)] || []).slice();
+    if(!cand.length) return ROWS.filter(function(r){ return r.i===h.i; })[0] || null;
+    var sc = userScope[String(h.user||'').toLowerCase()];
+    if(sc && sc.length){
+      var inScope = cand.filter(function(r){ return sc.indexOf(companyKey(r._company))>=0; });
+      if(inScope.length) cand = inScope;
+    }
+    if(cand.length===1) return cand[0];
+    var byIndex = cand.filter(function(r){ return r.i===h.i; });
+    if(byIndex.length===1) return byIndex[0];
+    var byBefore = cand.filter(function(r){ return sameVal(h, r, false) || sameVal(h, r, true); });
+    if(byBefore.length===1) return byBefore[0];
+    if(byBefore.length>1) cand = byBefore;
+    /* остаётся несколько — берём ближайшую по месту в таблице */
+    if(h.i!=null){
+      cand.sort(function(a,b){ return Math.abs(a.i-h.i)-Math.abs(b.i-h.i); });
+      return cand[0];
+    }
+    return null;
+  }
+
+  var ok=0, skip=0, same=0;
+  hist.forEach(function(h){
+    var row = pickRow(h);
+    if(!row){ skip++; return; }
+    var col = COLS.filter(function(c){ return c.f===h.field; })[0] || {};
+    var val = (h.after===null || h.after===undefined || h.after==='')
+            ? null : normalizeInput(h.after, col.type);
+    var src = srcByKey[row._k] || {};
+    var orig = src[h.field];
+    var ek = editKey(row, h.field);
+    if(String(val==null?'':val) === String(orig==null?'':orig)){
+      delete EDITS[ek]; same++; return;        /* совпало с таблицей — правка не нужна */
+    }
+    EDITS[ek] = val; ok++;
+  });
+  persistEdits(); assignKeys(); applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
+  return {restored:ok, skipped:skip, same:same, total:hist.length};
+}
+document.getElementById('restoreEditsBtn').addEventListener('click', function(){
+  if(!isAdmin()){ alert('Восстановление доступно администратору.'); return; }
+  var n = getHist().filter(function(h){ return !h.bulk && h.field && h.field!=='__row'; }).length;
+  if(!n){ alert('В журнале нет записей о правках.'); return; }
+  if(!confirm('Собрать правки заново из журнала изменений?\n\n'+
+      'Записей в журнале: '+n+'. Текущие правки будут дополнены и перезаписаны значениями из журнала.\n'+
+      'Данные в Google-таблице не затрагиваются.')) return;
+  var r = restoreEditsFromHistory();
+  var m = document.getElementById('impMsg');
+  var txt = 'Восстановлено правок: '+r.restored+' · уже совпадает с таблицей: '+r.same+
+            (r.skipped? ' · не нашли строку: '+r.skipped : '')+' (записей в журнале: '+r.total+').';
+  if(m) m.innerHTML = '<span style="color:var(--green)">'+esc(txt)+'</span>';
+  alert(txt);
+});
 document.getElementById('clearHistBtn').addEventListener('click', function(){
   if(!isAdmin()){ alert('Очистка журнала доступна администратору.'); return; }
   if(!confirm('Очистить журнал изменений? Сами правки в данных останутся.')) return;
