@@ -265,7 +265,8 @@
   </header>
 
   <div class="filters">
-    <div class="filt-group"><label>Подразделение</label><select id="f-company"><option value="">Все</option></select></div>
+    <div class="filt-group" id="companyGroup"><label>Подразделение</label><select id="f-company"><option value="">Все</option></select></div>
+    <div class="filt-group" id="teamGroup"><label>TEAM</label><select id="f-team"><option value="">Все</option></select></div>
     <div class="filt-group"><label>Категория</label><select id="f-cat"><option value="">Все</option></select></div>
     <div class="filt-group"><label>Год открытия</label><select id="f-year"><option value="">Все</option></select></div>
     <div class="filt-group"><label>Месяц открытия</label><select id="f-month"><option value="">Все</option></select></div>
@@ -813,6 +814,12 @@ var COMPANY_MAP = {
  'Проект Барки Точик':'Барки Точик (проект)','Барки Точик (проект)':'Барки Точик (проект)'
 };
 function normCompany(x){ if(!x) return 'Не указано'; x=String(x).trim(); return COMPANY_MAP[x]||x; }
+/* TEAM из таблицы: кавычки пишут по-разному ('…', “…”, «…») — приводим к одному виду */
+function teamName(r){
+  var t = (r && r.team!==null && r.team!==undefined) ? String(r.team).trim() : '';
+  if(!t) return 'TEAM не указан';
+  return t.replace(/[«»''„""`]/g,'"').replace(/\s+/g,' ').replace(/"\s*$/,'"');
+}
 /* ключ компании: без кавычек, правовой формы, регистра и лишних пробелов —
    чтобы «Арвис» и «ООО "Арвис"» считались одной организацией */
 function companyKey(x){
@@ -959,59 +966,135 @@ var EDITS = DB.get('edits', {});   /* "i:field" -> новое значение *
 })();
 var NEWROWS = DB.get('newrows', []);   /* заявки, добавленные вручную */
 /* незаполненные добавленные строки (создали и бросили) не копим — убираем при загрузке */
-(function cleanEmptyNewRows(){
-  var before = NEWROWS.length;
+/* строка, добавленная кнопкой и брошенная незаполненной: кнопка сама проставляет
+   только «кол-во найма» и статус, поэтому смотрим на содержательные поля */
+var BLANK_GRACE_MS = 15*60*1000;      /* 15 минут на заполнение — чтобы не удалить то, что сейчас набирают */
+function isBlankNewRow(r){
+  /* подразделение кнопка подставляет сама из фильтра — содержательным признаком не считаем */
+  return !['pos','dept','fio','team','note','cat','open','close']
+    .some(function(f){ return r[f]!==null && r[f]!==undefined && String(r[f]).trim()!==''; });
+}
+function dropBlankNewRows(){
+  var now = Date.now(), before = NEWROWS.length;
   NEWROWS = NEWROWS.filter(function(r){
-    return ['pos','companyRaw','dept','fio','team','note','cat','open','close']
-      .some(function(f){ return r[f]!==null && r[f]!==undefined && String(r[f]).trim()!==''; });
+    if(!isBlankNewRow(r)) return true;
+    if(!r.created) return false;                         /* старые пустышки без отметки времени */
+    return (now - r.created) < BLANK_GRACE_MS;           /* только что создали — даём дозаполнить */
   });
-  if(NEWROWS.length !== before) DB.set('newrows', NEWROWS);
-})();
+  if(NEWROWS.length !== before){ DB.set('newrows', NEWROWS); return before - NEWROWS.length; }
+  return 0;
+}
+dropBlankNewRows();
 /* ---- устойчивый ключ строки ----
    № заявки в таблице не уникален (нумерация идёт заново по компаниям), поэтому
    ключ собираем из № + подразделение + дата открытия + позиция, а одинаковые
    строки различаем порядковым номером. Ключ считается только по данным таблицы,
    поэтому правка переживает её обновление. */
-function baseKey(r){
-  function v(x){ return (x===null||x===undefined)?'':String(x).trim(); }
-  return v(r.id)+'~'+v(r.companyRaw)+'~'+v(r.open)+'~'+v(r.pos);
+var KSEP = '\u0001';          /* в данных такого символа быть не может */
+function nrmTxt(x){ return String(x==null?'':x).trim().toLowerCase().replace(/\s+/g,' '); }
+/* составляющие ключа в нормализованном виде: написание подразделения и позиции
+   в таблице меняется («Мармари» / «ООО "Мармари"», «Строй центр» / «Строй-центр»),
+   и правка не должна от этого отвязываться */
+function keyParts(r){
+  return [nrmTxt(r.id), companyKey(r.companyRaw), nrmTxt(r.open), nrmTxt(r.pos)];
 }
+function baseKey(r){ return keyParts(r).join(KSEP); }
+var KEYIDX = null;
 function assignKeys(){
   var seen = {};
   RAW.forEach(function(r){
     var b = baseKey(r);
     seen[b] = (seen[b]||0)+1;
-    r._k = 's~' + b + '~' + seen[b];
+    r._k = 's' + KSEP + b + KSEP + seen[b];
   });
-  NEWROWS.forEach(function(r){ r._k = 'm~' + r.i; });   /* ручные строки — по своему номеру */
+  NEWROWS.forEach(function(r){ r._k = 'm' + KSEP + r.i; });   /* ручные строки — по своему номеру */
+  KEYIDX = null;
 }
 function editKey(row, f){ return row._k + '\u00a7' + f; }
-/* перевод правок со старого формата «номер строки:поле» на ключи заявок */
+function splitKey(rk){
+  var p = rk.split(KSEP);
+  return (p.length===6 && p[0]==='s') ? {id:p[1], co:p[2], op:p[3], po:p[4]} : null;
+}
+/* указатели для поиска строки по неполному совпадению: если в таблице поправили
+   одно из полей ключа, правка всё равно находит свою заявку */
+function keyIndex(){
+  if(KEYIDX) return KEYIDX;
+  var ix = {full:{}, cpo:{}, cip:{}, cio:{}};
+  function put(m,k,r){ if(!k && k!=='') return; if(m[k]===undefined) m[k]=r; else m[k]=null; }
+  ROWS.forEach(function(r){
+    var q = keyParts(r);
+    put(ix.full, r._k, r);
+    put(ix.cpo, q[1]+KSEP+q[2]+KSEP+q[3], r);   /* подразделение + дата + позиция */
+    put(ix.cip, q[1]+KSEP+q[0]+KSEP+q[3], r);   /* подразделение + № + позиция */
+    put(ix.cio, q[1]+KSEP+q[0]+KSEP+q[2], r);   /* подразделение + № + дата */
+  });
+  KEYIDX = ix; return ix;
+}
+function resolveRow(rk){
+  var ix = keyIndex();
+  if(ix.full[rk]) return ix.full[rk];
+  var q = splitKey(rk); if(!q) return null;
+  return ix.cpo[q.co+KSEP+q.op+KSEP+q.po]
+      || ix.cip[q.co+KSEP+q.id+KSEP+q.po]
+      || ix.cio[q.co+KSEP+q.id+KSEP+q.op]
+      || null;
+}
+/* перевод правок со старых форматов ключа на нынешний */
 function migrateEdits(){
   var keys = Object.keys(EDITS);
   if(!keys.length) return;
-  if(keys[0].indexOf('\u00a7') >= 0) return;          /* уже новый формат */
+  var next = {}, changed = false;
   var byI = {};
   RAW.forEach(function(r){ byI[r.i] = r; });
   NEWROWS.forEach(function(r){ byI[r.i] = r; });
-  var next = {};
   keys.forEach(function(k){
-    var p = k.split(':'), row = byI[+p[0]];
-    if(row && row._k) next[editKey(row, p[1])] = EDITS[k];
+    var i = k.indexOf('\u00a7');
+    if(i < 0){                                   /* самый первый формат «номер строки:поле» */
+      changed = true;
+      var pp = k.split(':'), row = byI[+pp[0]];
+      if(row) next[editKey(row, pp[1])] = EDITS[k];
+      return;
+    }
+    var rk = k.slice(0,i), f = k.slice(i+1);
+    if(rk.indexOf(KSEP) >= 0){ next[k] = EDITS[k]; return; }   /* уже нынешний формат */
+    changed = true;
+    if(rk.charAt(0)==='m'){ next['m'+KSEP+rk.slice(2)+'\u00a7'+f] = EDITS[k]; return; }
+    /* прежний: s~№~подразделение~дата~позиция~повтор — дату опознаём по виду */
+    var p = rk.split('~');
+    if(p.length < 6) return;
+    var di = -1;
+    for(var j=2; j<p.length-1; j++){ if(/^\d{4}-\d{2}-\d{2}$/.test(p[j])){ di=j; break; } }
+    if(di < 0) di = p.length-3;                  /* дата пустая — позиция перед повтором */
+    var co = p.slice(2, di).join('~'), po = p.slice(di+1, p.length-1).join('~');
+    next['s'+KSEP+nrmTxt(p[1])+KSEP+companyKey(co)+KSEP+nrmTxt(p[di])+KSEP+nrmTxt(po)+
+         KSEP+p[p.length-1]+'\u00a7'+f] = EDITS[k];
   });
-  EDITS = next; persistEdits();
+  if(changed){ EDITS = next; persistEdits(); }
 }
 function applyEdits(){
   ROWS = RAW.map(function(r){ return Object.assign({}, r); })
     .concat(NEWROWS.map(function(r){ return Object.assign({}, r); }));
-  var byKey = {};
-  ROWS.forEach(function(r){ byKey[r._k] = r; });
+  KEYIDX = null;
+  var moved = [], lost = 0;
   Object.keys(EDITS).forEach(function(k){
     var i = k.indexOf('\u00a7'); if(i<0) return;
-    var row = byKey[k.slice(0,i)];
-    if(row) row[k.slice(i+1)] = EDITS[k];
+    var rk = k.slice(0,i), f = k.slice(i+1);
+    var row = resolveRow(rk);
+    if(!row){ lost++; return; }        /* строку не нашли — правку храним, вдруг вернётся */
+    row[f] = EDITS[k];
+    var ck = editKey(row, f);
+    if(ck !== k) moved.push([k, ck]);  /* нашли по запасному признаку — перепривязываем */
   });
+  EDITS_LOST = lost;
+  if(moved.length){
+    moved.forEach(function(pair){
+      if(EDITS[pair[1]] === undefined) EDITS[pair[1]] = EDITS[pair[0]];
+      delete EDITS[pair[0]];
+    });
+    persistEdits();
+  }
 }
+var EDITS_LOST = 0;
 function persistEdits(){ DB.set('edits', EDITS); }
 function persistNew(){ DB.set('newrows', NEWROWS); }
 function isNewRow(i){ return i >= 900000; }
@@ -1081,6 +1164,20 @@ function refreshFilterOptions(){
     fillSelect('f-company', Object.keys(counts).sort(function(a,b){return counts[b]-counts[a];}));
   }
   fc.value = keep;
+  /* у администратора вместо «Подразделение» — TEAM */
+  var tg = document.getElementById('teamGroup');
+  if(tg) tg.style.display = isAdmin() ? '' : 'none';
+  var cg = document.getElementById('companyGroup');
+  if(cg) cg.style.display = isAdmin() ? 'none' : '';
+  if(isAdmin() && fc.value){ fc.value = ''; }   /* скрытый фильтр не должен молча резать данные */
+  var ft = document.getElementById('f-team');
+  if(ft){
+    var tk = ft.value;
+    var tc = {};
+    ROWS.forEach(function(r){ var t = teamName(r); tc[t] = (tc[t]||0)+1; });
+    fillSelect('f-team', Object.keys(tc).sort(function(a,b){ return tc[b]-tc[a]; }));
+    ft.value = tk;
+  }
   var yk=document.getElementById('f-year').value;
   fillSelect('f-year', Array.from(new Set(ROWS.map(function(r){return r._year;}).filter(Boolean))).sort().map(String));
   document.getElementById('f-year').value = yk;
@@ -1100,11 +1197,13 @@ function applyFilters(opts){
   var co=document.getElementById('f-company').value, ca=document.getElementById('f-cat').value,
       yr=document.getElementById('f-year').value, mo=document.getElementById('f-month').value,
       st=document.getElementById('f-status').value;
+  var tm=(isAdmin() && document.getElementById('f-team')) ? document.getElementById('f-team').value : '';
   var skipStatus = !!(opts && opts.ignoreStatus);
   var scope = isCompanyUser() ? sessionCompanies().map(companyKey) : null;
   return ROWS.filter(function(r){
     if(scope && scope.length && scope.indexOf(companyKey(r._company))<0) return false;
     if(co && r._company!==co) return false;
+    if(tm && teamName(r)!==tm) return false;
     if(ca && r.cat!==ca) return false;
     if(yr && String(r._year)!==yr) return false;
     if(mo && r._month!==mo) return false;
@@ -1694,7 +1793,8 @@ document.getElementById('addRowBtn').addEventListener('click', function(){
   var fc = document.getElementById('f-company').value;
   var row = {i:maxI, id:maxId+1, cat:null, pos:null, dept:null,
     companyRaw:(fc||null), open:null, close:null, days_close:null, hires:1,
-    interviews:null, closed_total:null, fio:null, note:null, status:STATUS_OPEN, team:null};
+    interviews:null, closed_total:null, fio:null, note:null, status:STATUS_OPEN, team:null,
+    created:Date.now()};
   NEWROWS.push(row); persistNew(); assignKeys(); applyEdits();
   logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, i:row.i, id:row.id,
     field:'__row', fieldLabel:'Новая заявка', before:'—', after:'заявка № '+row.id});
@@ -2065,6 +2165,7 @@ function cloudPull(pathIdx){
         try{
           EDITS = DB.get('edits', {});
           NEWROWS = DB.get('newrows', []);
+          dropBlankNewRows();
           assignKeys(); applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
         }catch(err){ console.error('merge', err); }
       }
@@ -2192,23 +2293,29 @@ function gsFetchData(silent){
       RAW = recs; assignKeys();
       var newByKey = {}, newBase = {};
       RAW.forEach(function(r){ newByKey[r._k] = r; newBase[baseKey(r)] = true; });
-      var keepE = {}, gone = 0, overridden = 0;
+      var keepE = {}, orphan = 0, overridden = 0;
       function cmpv(x){ return (x===null||x===undefined)?'':String(x); }
       Object.keys(EDITS).forEach(function(k){
         var pos = k.indexOf('\u00a7'); if(pos<0) return;
         var rk = k.slice(0,pos), f = k.slice(pos+1);
         if(rk.charAt(0)==='m'){ keepE[k] = EDITS[k]; return; }   /* правка в ручной строке */
-        var nr = newByKey[rk];
-        if(!nr){ gone++; return; }                               /* заявки больше нет в таблице */
-        var was = oldByKey[rk];
-        if(was && cmpv(was[f]) !== cmpv(nr[f])){ overridden++; return; }  /* поле изменили в таблице — таблица главнее */
+        var nr = newByKey[rk], was = oldByKey[rk];
+        /* таблица главнее только если это поле в ней действительно изменили
+           и прежнюю версию таблицы мы видели в этой же сессии */
+        if(GS_FETCHED && was && nr && cmpv(was[f]) !== cmpv(nr[f])){ overridden++; return; }
+        if(!nr) orphan++;            /* строку не нашли — правку НЕ удаляем, вдруг вернётся */
         keepE[k] = EDITS[k];
       });
       var editsChanged = JSON.stringify(keepE) !== JSON.stringify(EDITS);
       EDITS = keepE;
+      GS_FETCHED = true;
       /* ручная строка, которая уже появилась в таблице, больше не нужна */
       var nBefore = NEWROWS.length;
       NEWROWS = NEWROWS.filter(function(r){ return !newBase[baseKey(r)]; });
+      NEWROWS = NEWROWS.filter(function(r){
+        if(!isBlankNewRow(r)) return true;
+        return r.created && (Date.now() - r.created) < BLANK_GRACE_MS;
+      });
       assignKeys();
       /* пишем в общую базу только если действительно что-то изменилось —
          иначе свежий браузер затёр бы чужие правки пустым значением */
@@ -2257,6 +2364,7 @@ function gsRefresh(){ gsFetchData(false).catch(function(){}); }
 
 /* фоновое обновление */
 var GS_TIMER = null;
+var GS_FETCHED = false;   /* видели ли мы таблицу в этой сессии */
 function gsStartAuto(){
   if(GS_TIMER){ clearInterval(GS_TIMER); GS_TIMER=null; }
   var mins = parseInt(DB.get('gsauto', 3), 10);
@@ -2772,7 +2880,7 @@ document.querySelectorAll('.tab-btn').forEach(function(btn){
     renderAll();
   });
 });
-['f-company','f-cat','f-year','f-month','f-status'].forEach(function(id){
+['f-company','f-team','f-cat','f-year','f-month','f-status'].forEach(function(id){
   document.getElementById(id).addEventListener('change', function(){ page=1; renderAll(); });
 });
 document.addEventListener('click', function(e){
@@ -2780,7 +2888,8 @@ document.addEventListener('click', function(e){
 });
 document.getElementById('resetBtn').addEventListener('click', function(){
   subsetMode = '';
-  ['f-company','f-cat','f-year','f-month','f-status'].forEach(function(id){ document.getElementById(id).value=''; });
+  ['f-company','f-team','f-cat','f-year','f-month','f-status'].forEach(function(id){
+    var el=document.getElementById(id); if(el) el.value=''; });
   activeIssue=''; page=1; renderAll();
 });
 document.getElementById('openVacSearch').addEventListener('input', renderOpenVacTable);
@@ -2816,6 +2925,7 @@ function startApp(user){
     }
   } else { fc.value=''; fc.disabled = false; fc.title=''; }
   if(!DB.ok) console.warn('localStorage недоступен — история не сохранится между сессиями');
+  refreshFilterOptions();
   renderAll();
   /* сначала поднимаем правки из общей базы, и только потом тянем таблицу —
      иначе чистый браузер успевал записать пустые правки поверх общих */
