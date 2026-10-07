@@ -30,6 +30,18 @@
     {
       "source": "/service/records",
       "destination": "/api/db"
+    },
+    {
+      "source": "/status/check",
+      "destination": "/api/db"
+    },
+    {
+      "source": "/hr/state",
+      "destination": "/api/db"
+    },
+    {
+      "source": "/service/state",
+      "destination": "/api/db"
     }
   ]
 }
