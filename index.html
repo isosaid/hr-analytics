@@ -2168,6 +2168,7 @@ function cloudPull(pathIdx){
           NEWROWS = DB.get('newrows', []);
           dropBlankNewRows();
           assignKeys(); applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
+          try{ maybeAutoRestore(); }catch(e2){ console.error('autofix', e2); }
         }catch(err){ console.error('merge', err); }
       }
       CLOUD.lastPull = Date.now(); CLOUD.fails = 0;
@@ -2366,6 +2367,7 @@ function gsRefresh(){ gsFetchData(false).catch(function(){}); }
 /* фоновое обновление */
 var GS_TIMER = null;
 var GS_FETCHED = false;   /* видели ли мы таблицу в этой сессии */
+var BUILD = '2026-10-08';   /* версия сборки — видна в подвале и в журнале входов */
 function gsStartAuto(){
   if(GS_TIMER){ clearInterval(GS_TIMER); GS_TIMER=null; }
   var mins = parseInt(DB.get('gsauto', 3), 10);
@@ -2743,17 +2745,18 @@ function restoreEditsFromHistory(){
   return {restored:ok, skipped:skip, same:same, total:hist.length};
 }
 /* если правки потеряны, а журнал цел — собираем их заново сами, без кнопки */
-var AUTOFIX_DONE = false;
+var AUTOFIX_AT = 0;
 function restorableCount(){
   return getHist().filter(function(h){
     return !h.bulk && h.field && h.field!=='__row' && (h.k || h.i!=null || h.id!=null);
   }).length;
 }
 function maybeAutoRestore(){
-  if(AUTOFIX_DONE || !SESSION) return;
+  if(!SESSION) return;
+  if(Date.now() - AUTOFIX_AT < 120000) return;      /* не чаще раза в две минуты */
   var have = Object.keys(EDITS).length, can = restorableCount();
   if(can < have + 20) return;              /* потери нет — не трогаем */
-  AUTOFIX_DONE = true;
+  AUTOFIX_AT = Date.now();
   var r = restoreEditsFromHistory();
   if(!r.restored) return;
   logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
@@ -2926,7 +2929,7 @@ function renderFooter(){
       + (cfg && cfg.when ? ' · обновлено ' + cfg.when : '');
   }
   var f2 = document.getElementById('footStore');
-  if(f2) f2.textContent = 'хранилище: ' + (CLOUD.on===true ? 'MS Access / SQL' : 'локальное');
+  if(f2) f2.textContent = 'хранилище: ' + (CLOUD.on===true ? 'MS Access / SQL' : 'локальное') + ' · версия ' + BUILD;
   var f3 = document.getElementById('footYear');
   if(f3) f3.textContent = '© ' + new Date().getFullYear();
 }
@@ -3055,7 +3058,8 @@ function tryLogin(){
   var u = users.find(function(x){ return x.login.toLowerCase()===l.toLowerCase(); });
   var ok = !!u && u.hash===hashPass(p);
   logLogin({ts:new Date().toISOString(), when:nowStr(), login:l||'(пусто)',
-    company:(u&&u.company)||'', device:getDeviceId(), browser:describeBrowser(), ok:ok});
+    company:(u&&u.company)||'', device:getDeviceId(),
+    browser:describeBrowser()+' · сборка '+BUILD, ok:ok});
   if(!ok){ err.textContent='Неверный логин или пароль'; return; }
   err.textContent=''; document.getElementById('loginPass').value='';
   startApp(u);
