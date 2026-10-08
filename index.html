@@ -730,7 +730,7 @@ function sessionCompanies(){
 }
 
 /* журнал входов */
-var LOGIN_CAP = 2000;
+var LOGIN_CAP = 800;
 function getLogins(){ return DB.get('logins', []); }
 function logLogin(entry){
   var l = getLogins();
@@ -743,7 +743,7 @@ function logLogin(entry){
 }
 
 /* журнал изменений */
-var HIST_CAP = 3000;
+var HIST_CAP = 1500;
 function getHist(){ return DB.get('history', []); }
 function logChange(entry){
   var h = getHist();
@@ -2008,10 +2008,14 @@ var API_PATHS = ['/data/hr.json','/reports/summary','/hr/data','/service/records
 /* text/plain вместо application/json: не вызывает предварительный запрос
    и не попадает под правила «защиты ввода данных» у антивирусов */
 var API_HEAD = {'Content-Type':'text/plain;charset=UTF-8'};
-var CLOUD = {on:null, base:null, keys:['users','history','logins','edits','newrows','snapshots','gs','removed'],
+var CLOUD = {on:null, base:null,
+             /* лёгкие ключи — их тянем каждый раз */
+             keys:['users','edits','newrows','snapshots','gs','removed'],
+             /* журналы весят под мегабайт: качаем один раз за сеанс и по заходу в «Историю» */
+             heavy:['history','logins'], gotHeavy:false,
              journals:{history:HIST_CAP_REF(), logins:LOGIN_CAP_REF()}, pushing:{}, lastPull:0};
-function HIST_CAP_REF(){ return 3000; }
-function LOGIN_CAP_REF(){ return 2000; }
+function HIST_CAP_REF(){ return 1500; }
+function LOGIN_CAP_REF(){ return 800; }
 
 /* коды, при которых запрос стоит просто повторить, а не объявлять базу недоступной */
 function cloudTransient(code){ return code===499 || code===408 || code===425 || code===429 ||
@@ -2086,7 +2090,17 @@ function cloudFlush(){
   keys.forEach(function(k){
     var val = DB.get(k, null);
     if(val===null || val===undefined) return;
-    cloudPush(k, (k==='history'||k==='logins') && Array.isArray(val) ? val.slice(0,300) : val);
+    if((k==='history'||k==='logins') && Array.isArray(val)){
+      /* сервер сливает журналы по uid — шлём только то, чего ещё не отправляли */
+      CLOUD.sent = CLOUD.sent || {};
+      var seen = CLOUD.sent[k] = CLOUD.sent[k] || {};
+      var fresh = val.filter(function(x){ return x && x.uid && !seen[x.uid]; }).slice(0,300);
+      if(!fresh.length) return;
+      fresh.forEach(function(x){ seen[x.uid] = 1; });
+      cloudPush(k, fresh);
+      return;
+    }
+    cloudPush(k, val);
   });
 }
 /* не теряем накопленное при уходе со страницы */
@@ -2121,10 +2135,15 @@ function cloudPull(pathIdx){
   var start = (pathIdx!==undefined) ? pathIdx : paths.indexOf(apiBase());
   if(start < 0) start = 0;
   var path = paths[start] || paths[0];
+  var wantHeavy = !CLOUD.gotHeavy || CLOUD.needHeavy;
+  CLOUD.needHeavy = false;
+  var askKeys = wantHeavy ? CLOUD.keys.concat(CLOUD.heavy) : CLOUD.keys;
+  if(wantHeavy) CLOUD.gotHeavy = true;
   var req = (path === '/data/hr.json')
-    ? fetch(path, {cache:'no-store'})                       /* обычная загрузка файла */
+    /* обязательно со списком ключей: без него сервер отдаёт всё, включая копию таблицы */
+    ? fetch(path + '?keys=' + encodeURIComponent(askKeys.join(',')), {cache:'no-store'})
     : fetch(path, {method:'POST', headers:API_HEAD,
-                   body:JSON.stringify({read:CLOUD.keys}), cache:'no-store'});
+                   body:JSON.stringify({read:askKeys}), cache:'no-store'});
   return req
     .then(function(r){
       if(r.status===501){ CLOUD.on=false; cloudSay('MS Access / SQL — база не подключена, данные только в этом браузере.'); return null; }
@@ -2396,7 +2415,7 @@ function gsRefresh(){ gsFetchData(false).catch(function(){}); }
 /* фоновое обновление */
 var GS_TIMER = null;
 var GS_FETCHED = false;   /* видели ли мы таблицу в этой сессии */
-var BUILD = '2026-10-08b';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-08c';   /* версия сборки — видна в подвале и в журнале входов */
 function gsStartAuto(){
   if(GS_TIMER){ clearInterval(GS_TIMER); GS_TIMER=null; }
   var mins = parseInt(DB.get('gsauto', 3), 10);
@@ -2979,6 +2998,7 @@ function renderAll(){
   try { renderFooter(); } catch(e){ console.error('footer', e); }
 }
 function openTab(name){
+  if(name==='history' && CLOUD.on!==false){ CLOUD.needHeavy = true; try{ cloudPull(); }catch(e){} }
   document.querySelectorAll('.tab-btn').forEach(function(b){
     b.classList.toggle('active', b.dataset.tab===name); });
   document.querySelectorAll('.view').forEach(function(v){ v.classList.remove('active'); });
