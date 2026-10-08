@@ -2449,7 +2449,7 @@ function gsRefresh(){ gsFetchData(false).catch(function(){}); }
 /* фоновое обновление */
 var GS_TIMER = null;
 var GS_FETCHED = false;   /* видели ли мы таблицу в этой сессии */
-var BUILD = '2026-10-08d';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-08e';   /* версия сборки — видна в подвале и в журнале входов */
 function gsStartAuto(){
   if(GS_TIMER){ clearInterval(GS_TIMER); GS_TIMER=null; }
   var mins = parseInt(DB.get('gsauto', 3), 10);
@@ -2833,6 +2833,23 @@ function restorableCount(){
     return !h.bulk && h.field && h.field!=='__row' && (h.k || h.i!=null || h.id!=null);
   }).length;
 }
+/* разовое восстановление: срабатывает один раз в каждом браузере.
+   Каждый поднимает правки из своего журнала, а слияние по ячейкам сводит всё вместе —
+   так возвращается работа тех, чьи правки затёрла старая версия дашборда. */
+var FORCE_TAG = 'fix-2026-10-08-19';
+function forcedRestoreOnce(){
+  if(!SESSION) return;
+  if(DB.get('forcedfix','') === FORCE_TAG) return;
+  DB.set('forcedfix', FORCE_TAG);
+  var have = Object.keys(EDITS).length;
+  var r = restoreEditsFromHistory();
+  if(!r.restored) return;
+  logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
+    fieldLabel:'Восстановление правок из журнала', before:have+' правок', after:Object.keys(EDITS).length+' правок'});
+  var m = document.getElementById('impMsg');
+  if(m) m.innerHTML = '<span style="color:var(--green)">Правки восстановлены из журнала: '+r.restored+'.</span>';
+  renderHistory();
+}
 function maybeAutoRestore(){
   if(!SESSION) return;
   if(Date.now() - AUTOFIX_AT < 120000) return;      /* не чаще раза в две минуты */
@@ -3120,6 +3137,8 @@ function startApp(user){
   /* данные из базы и таблицы приходят не сразу — проверяем потерю чуть позже */
   setTimeout(function(){ try{ maybeAutoRestore(); }catch(e){ console.error('autofix', e); } }, 7000);
   setTimeout(function(){ try{ maybeAutoRestore(); }catch(e){ console.error('autofix', e); } }, 20000);
+  /* журналы приходят из базы не сразу — ждём, пока подтянутся, и восстанавливаем один раз */
+  setTimeout(function(){ try{ forcedRestoreOnce(); }catch(e){ console.error('forcedfix', e); } }, 25000);
   /* сначала поднимаем правки из общей базы, и только потом тянем таблицу —
      иначе чистый браузер успевал записать пустые правки поверх общих */
   function bootSheet(){ try { gsBoot(); } catch(e){ console.error('gsBoot', e); } }
