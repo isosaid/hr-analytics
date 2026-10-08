@@ -2195,8 +2195,42 @@ function cloudPull(pathIdx){
         if(merged.length > remote.length) cloudPush(k, merged);   /* дослать наше на сервер */
       });
 
+      /* правки сливаем по ячейкам, а не заменяем целиком: пока база была недоступна,
+         у каждого накопились свои — при замене работа одного затирала бы работу другого */
+      (function mergeEdits(){
+        var remote = d['edits'];
+        if(!remote || !remote.value || typeof remote.value!=='object') return;
+        var local = DB.get('edits', {}) || {};
+        var localTs = DB.get('edits_ts', 0);
+        var out = {}, changed = false;
+        Object.keys(remote.value).forEach(function(k){ out[k] = remote.value[k]; });
+        Object.keys(local).forEach(function(k){
+          if(!(k in out)){ out[k] = local[k]; changed = true; return; }
+          /* одну и ту же ячейку правили в двух местах — берём ту сторону, что свежее */
+          if(String(out[k]) !== String(local[k]) && localTs >= remote.ts){ out[k] = local[k]; changed = true; }
+        });
+        if(changed || JSON.stringify(out)!==JSON.stringify(local)){
+          DB.set('edits', out); DB.set('edits_ts', Math.max(remote.ts, localTs)); touched = true;
+        }
+      })();
+      /* добавленные вручную заявки тоже объединяем по ключу строки */
+      (function mergeNew(){
+        var remote = d['newrows'];
+        if(!remote || !Array.isArray(remote.value)) return;
+        var local = DB.get('newrows', []) || [];
+        var seen = {}, out = [];
+        remote.value.concat(local).forEach(function(r){
+          if(!r) return;
+          var k = 'm' + r.i;
+          if(seen[k]) return;
+          seen[k] = 1; out.push(r);
+        });
+        if(JSON.stringify(out)!==JSON.stringify(local)){
+          DB.set('newrows', out); DB.set('newrows_ts', Math.max(remote.ts, DB.get('newrows_ts',0))); touched = true;
+        }
+      })();
       /* остальное: свежая запись побеждает */
-      [['users',null],['edits',{}],['newrows',[]],['snapshots',[]],['gs',null],['removed',[]]].forEach(function(pair){
+      [['users',null],['snapshots',[]],['gs',null],['removed',[]]].forEach(function(pair){
         var k = pair[0], remote = d[k];
         if(!remote || remote.value===undefined || remote.value===null) return;
         var localTs = DB.get(k+'_ts', 0);
@@ -2415,7 +2449,7 @@ function gsRefresh(){ gsFetchData(false).catch(function(){}); }
 /* фоновое обновление */
 var GS_TIMER = null;
 var GS_FETCHED = false;   /* видели ли мы таблицу в этой сессии */
-var BUILD = '2026-10-08c';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-08d';   /* версия сборки — видна в подвале и в журнале входов */
 function gsStartAuto(){
   if(GS_TIMER){ clearInterval(GS_TIMER); GS_TIMER=null; }
   var mins = parseInt(DB.get('gsauto', 3), 10);
