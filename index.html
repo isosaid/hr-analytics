@@ -602,9 +602,11 @@ var DB = {
     /* зеркалим в общую базу Vercel */
     try{
       if(typeof CLOUD!=='undefined' && CLOUD.on!==false && CLOUD.keys.indexOf(key)>=0){
-        if(key==='history'||key==='logins') cloudPush(key, Array.isArray(val)? val.slice(0,500) : val);
-        else { this.mem[key+'_ts']=JSON.stringify(Date.now()); cloudPush(key, val);
-               try{ if(this.ok) localStorage.setItem(DB_PREFIX+key+'_ts', JSON.stringify(Date.now())); }catch(e2){} }
+        if(key!=='history' && key!=='logins'){
+          this.mem[key+'_ts']=JSON.stringify(Date.now());
+          try{ if(this.ok) localStorage.setItem(DB_PREFIX+key+'_ts', JSON.stringify(Date.now())); }catch(e2){}
+        }
+        cloudQueue(key);          /* копим и шлём пачкой — чтобы не дёргать базу на каждую ячейку */
       }
     }catch(e3){}
     return okw;
@@ -2068,6 +2070,28 @@ function cloudSay(txt, color){
 function cloudOkSay(){ cloudSay('MS Access / SQL — база подключена · синхронизировано ' + nowStr() +
   (CLOUD.viaScript ? ' · обходной режим' : ''), 'var(--green)'); }
 /* отправка значения на сервер (без ожидания) */
+/* ---- очередь записи ----
+   правка каждой ячейки раньше отправляла в базу и весь журнал, и весь набор правок.
+   На сотне правок это сотни тяжёлых запросов — бесплатный тариф Upstash такого не выдерживает.
+   Теперь изменения копятся и уходят одной отправкой раз в 12 секунд. */
+var CLOUD_Q = {}, CLOUD_T = null, CLOUD_FLUSH_MS = 12000;
+function cloudQueue(key){
+  CLOUD_Q[key] = 1;
+  if(CLOUD_T) return;
+  CLOUD_T = setTimeout(cloudFlush, CLOUD_FLUSH_MS);
+}
+function cloudFlush(){
+  CLOUD_T = null;
+  var keys = Object.keys(CLOUD_Q); CLOUD_Q = {};
+  keys.forEach(function(k){
+    var val = DB.get(k, null);
+    if(val===null || val===undefined) return;
+    cloudPush(k, (k==='history'||k==='logins') && Array.isArray(val) ? val.slice(0,300) : val);
+  });
+}
+/* не теряем накопленное при уходе со страницы */
+window.addEventListener('beforeunload', function(){ if(CLOUD_T){ clearTimeout(CLOUD_T); cloudFlush(); } });
+document.addEventListener('visibilitychange', function(){ if(document.hidden && CLOUD_T){ clearTimeout(CLOUD_T); cloudFlush(); } });
 function cloudPush(key, value, attempt){
   if(CLOUD.on===false) return;
   attempt = attempt || 0;
@@ -2196,7 +2220,7 @@ function cloudPull(pathIdx){
 }
 function cloudStart(){
   var first = cloudPull();
-  setInterval(function(){ if(!document.hidden) cloudPull(); }, 180000);   /* 3 мин — экономим запросы к базе */
+  setInterval(function(){ if(!document.hidden) cloudPull(); }, 300000);   /* 5 мин — бережём лимит базы */
   document.addEventListener('visibilitychange', function(){
     if(!document.hidden && Date.now()-CLOUD.lastPull > 20000) cloudPull();
   });
@@ -2222,6 +2246,11 @@ function cloudPushSheet(recs){
   if(CLOUD.on===false || !recs || !recs.length) return;
   var sig = sdSignature(recs);
   if(CLOUD.sdSig === sig) return;                      /* не изменилось — не гоняем впустую */
+  /* копия таблицы — самая тяжёлая запись (сотни килобайт), шлём не чаще раза в 6 часов */
+  var last = DB.get('sdpush', 0);
+  if(Date.now() - last < 6*3600*1000) return;
+  if(!canManageData()) return;                         /* и только из учётки, которая управляет данными */
+  DB.set('sdpush', Date.now());
   CLOUD.sdSig = sig;
   fetch(apiBase(), {method:'POST', headers:API_HEAD,
     body:JSON.stringify({key:'sheetdata', value:sdPack(recs)}), cache:'no-store'})
@@ -2367,7 +2396,7 @@ function gsRefresh(){ gsFetchData(false).catch(function(){}); }
 /* фоновое обновление */
 var GS_TIMER = null;
 var GS_FETCHED = false;   /* видели ли мы таблицу в этой сессии */
-var BUILD = '2026-10-08';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-08b';   /* версия сборки — видна в подвале и в журнале входов */
 function gsStartAuto(){
   if(GS_TIMER){ clearInterval(GS_TIMER); GS_TIMER=null; }
   var mins = parseInt(DB.get('gsauto', 3), 10);
