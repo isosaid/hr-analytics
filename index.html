@@ -2450,7 +2450,7 @@ function gsRefresh(){ gsFetchData(false).catch(function(){}); }
 /* фоновое обновление */
 var GS_TIMER = null;
 var GS_FETCHED = false;   /* видели ли мы таблицу в этой сессии */
-var BUILD = '2026-10-09';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-09b';   /* версия сборки — видна в подвале и в журнале входов */
 function gsStartAuto(){
   if(GS_TIMER){ clearInterval(GS_TIMER); GS_TIMER=null; }
   var mins = parseInt(DB.get('gsauto', 3), 10);
@@ -2808,6 +2808,7 @@ function pickRowForHist(h){
 }
 function restoreEditsFromHistory(){
   var hist = getHist().filter(function(h){
+    if(ruleExcludes(h)) return false;          /* эти правки отменены — не поднимаем */
     return !h.bulk && h.field && h.field!=='__row' && (h.k || h.i!=null || h.id!=null);
   }).slice().sort(function(a,b){ return String(a.ts||'').localeCompare(String(b.ts||'')); });
 
@@ -2855,6 +2856,28 @@ function forcedRestoreOnce(){
   if(m) m.innerHTML = '<span style="color:var(--green)">Правки восстановлены из журнала: '+r.restored+'.</span>';
   renderHistory();
 }
+/* разовый откат по правилу — выполняется один раз в каждом браузере */
+var ROLLBACK_TAG = 'rb-2026-10-09';
+function forcedRollbackOnce(){
+  if(!SESSION || !isAdmin()) return;             /* правит общие данные — только из админской учётки */
+  if(DB.get('rollbackdone','') === ROLLBACK_TAG) return;
+  var cut = ruleCut(); if(!cut) return;
+  DB.set('rollbackdone', ROLLBACK_TAG);
+  var было = Object.keys(EDITS).length;
+  var snaps = getSnaps();
+  snaps.unshift({name:'До отмены правок после '+ROLLBACK_RULE.when, user:SESSION.login, when:nowStr(),
+                 ts:new Date().toISOString(), edits:JSON.parse(JSON.stringify(EDITS))});
+  saveSnaps(snaps.slice(0,30));
+  var r = rollbackAfter(cut, ROLLBACK_RULE.logins);
+  if(!r.undone) return;
+  logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
+    fieldLabel:'Отмена правок после '+ROLLBACK_RULE.when,
+    before:было+' правок', after:Object.keys(EDITS).length+' правок'});
+  var m = document.getElementById('impMsg');
+  if(m) m.innerHTML = '<span style="color:var(--green)">Отменено ячеек: '+r.undone+
+    (r.kept?' · оставлено (позже правил другой): '+r.kept:'')+'.</span>';
+  renderHistory();
+}
 function maybeAutoRestore(){
   if(!SESSION) return;
   if(Date.now() - AUTOFIX_AT < 120000) return;      /* не чаще раза в две минуты */
@@ -2872,6 +2895,16 @@ function maybeAutoRestore(){
 /* ---- отмена правок, сделанных после указанного момента ----
    Отменяем только те ячейки, которых после этого момента касались названные учётки.
    Если ту же ячейку позже правил кто-то другой — его значение остаётся. */
+/* правило отката: правки этих учёток после указанного момента считаются отменёнными.
+   Его же учитывает восстановление из журнала — иначе оно вернуло бы отменённое обратно. */
+var ROLLBACK_RULE = { when:'07.10.2026 19:55', logins:['hr-analytics','hr@avesto.tj'] };
+function ruleCut(){ return parseWhen(ROLLBACK_RULE.when); }
+function ruleExcludes(h){
+  if(!h || !h.ts) return false;
+  var c = ruleCut(); if(!c) return false;
+  if(new Date(h.ts).getTime() <= c) return false;
+  return ROLLBACK_RULE.logins.indexOf(String(h.user||'').toLowerCase()) >= 0;
+}
 function parseWhen(txt){
   var m = String(txt||'').match(/^(\d{2})\.(\d{2})\.(\d{4})[ ,]+(\d{1,2}):(\d{2})$/);
   if(!m) return null;
@@ -3223,6 +3256,7 @@ function startApp(user){
   setTimeout(function(){ try{ maybeAutoRestore(); }catch(e){ console.error('autofix', e); } }, 20000);
   /* журналы приходят из базы не сразу — ждём, пока подтянутся, и восстанавливаем один раз */
   setTimeout(function(){ try{ forcedRestoreOnce(); }catch(e){ console.error('forcedfix', e); } }, 25000);
+  setTimeout(function(){ try{ forcedRollbackOnce(); }catch(e){ console.error('rollback', e); } }, 35000);
   /* сначала поднимаем правки из общей базы, и только потом тянем таблицу —
      иначе чистый браузер успевал записать пустые правки поверх общих */
   function bootSheet(){ try { gsBoot(); } catch(e){ console.error('gsBoot', e); } }
