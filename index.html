@@ -826,7 +826,34 @@ function teamName(r){
 }
 /* ключ компании: без кавычек, правовой формы, регистра и лишних пробелов —
    чтобы «Арвис» и «ООО "Арвис"» считались одной организацией */
+/* ---- разные написания одного подразделения ----
+   В Google Sheets название могут написать латиницей, кириллицей или сокращённо.
+   Здесь перечислены такие пары: всё из from (и любое название, начинающееся со слова
+   из prefix) считается тем же подразделением, что и to. */
+var COMPANY_ALIASES = [
+  {to:'ZET-MOBILE', prefix:['зет','zet'],
+   from:['Зет Мобайл','Зет-Мобайл','ЗетМобайл','Зет Мобаил','ЗЕТ МОБАЙЛ','Zet Mobail','Зет мобил']}
+];
+var ALIAS_MAP = null, ALIAS_PREFIX = null;
+function buildAliases(){
+  ALIAS_MAP = {}; ALIAS_PREFIX = [];
+  COMPANY_ALIASES.forEach(function(a){
+    var to = companyKeyRaw(a.to);
+    (a.from||[]).forEach(function(n){ var k = companyKeyRaw(n); if(k && k!==to) ALIAS_MAP[k] = to; });
+    (a.prefix||[]).forEach(function(p){ var k = companyKeyRaw(p); if(k) ALIAS_PREFIX.push({p:k, to:to}); });
+  });
+}
 function companyKey(x){
+  var k = companyKeyRaw(x);
+  if(!ALIAS_MAP) buildAliases();
+  if(ALIAS_MAP[k]) return ALIAS_MAP[k];
+  for(var i=0;i<ALIAS_PREFIX.length;i++){
+    var a = ALIAS_PREFIX[i];
+    if(k === a.p || k.indexOf(a.p + ' ')===0) return a.to;   /* «Зет Мобайл», «Зет-Мобайл», «Зет» */
+  }
+  return k;
+}
+function companyKeyRaw(x){
   x = String(x||'').toLowerCase();
   x = x.replace(/[«»""„“”'`]/g,'"');
   /* латинские буквы, похожие на кириллицу: «OOO» латиницей встречается в выгрузках */
@@ -2539,7 +2566,7 @@ function gsRefresh(){ gsFetchData(false).catch(function(){}); }
 /* фоновое обновление */
 var GS_TIMER = null;
 var GS_FETCHED = false;   /* видели ли мы таблицу в этой сессии */
-var BUILD = '2026-10-09d';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-09e';   /* версия сборки — видна в подвале и в журнале входов */
 function gsStartAuto(){
   if(GS_TIMER){ clearInterval(GS_TIMER); GS_TIMER=null; }
   var mins = parseInt(DB.get('gsauto', 3), 10);
