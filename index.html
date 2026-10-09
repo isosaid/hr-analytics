@@ -2450,7 +2450,7 @@ function gsRefresh(){ gsFetchData(false).catch(function(){}); }
 /* фоновое обновление */
 var GS_TIMER = null;
 var GS_FETCHED = false;   /* видели ли мы таблицу в этой сессии */
-var BUILD = '2026-10-09b';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-09c';   /* версия сборки — видна в подвале и в журнале входов */
 function gsStartAuto(){
   if(GS_TIMER){ clearInterval(GS_TIMER); GS_TIMER=null; }
   var mins = parseInt(DB.get('gsauto', 3), 10);
@@ -2836,13 +2836,14 @@ function restoreEditsFromHistory(){
 var AUTOFIX_AT = 0;
 function restorableCount(){
   return getHist().filter(function(h){
+    if(ruleExcludes(h)) return false;        /* отменённые правки не считаем потерей */
     return !h.bulk && h.field && h.field!=='__row' && (h.k || h.i!=null || h.id!=null);
   }).length;
 }
 /* разовое восстановление: срабатывает один раз в каждом браузере.
    Каждый поднимает правки из своего журнала, а слияние по ячейкам сводит всё вместе —
    так возвращается работа тех, чьи правки затёрла старая версия дашборда. */
-var FORCE_TAG = 'fix-2026-10-08-19';
+var FORCE_TAG = 'fix-2026-10-09-12';
 function forcedRestoreOnce(){
   if(!SESSION) return;
   if(DB.get('forcedfix','') === FORCE_TAG) return;
@@ -2868,7 +2869,7 @@ function forcedRollbackOnce(){
   snaps.unshift({name:'До отмены правок после '+ROLLBACK_RULE.when, user:SESSION.login, when:nowStr(),
                  ts:new Date().toISOString(), edits:JSON.parse(JSON.stringify(EDITS))});
   saveSnaps(snaps.slice(0,30));
-  var r = rollbackAfter(cut, ROLLBACK_RULE.logins);
+  var r = rollbackAfter(cut, ROLLBACK_RULE.logins, ruleUntil());
   if(!r.undone) return;
   logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
     fieldLabel:'Отмена правок после '+ROLLBACK_RULE.when,
@@ -2897,12 +2898,18 @@ function maybeAutoRestore(){
    Если ту же ячейку позже правил кто-то другой — его значение остаётся. */
 /* правило отката: правки этих учёток после указанного момента считаются отменёнными.
    Его же учитывает восстановление из журнала — иначе оно вернуло бы отменённое обратно. */
-var ROLLBACK_RULE = { when:'07.10.2026 19:55', logins:['hr-analytics','hr@avesto.tj'] };
+/* until — момент, когда откат был назначен. Правки, сделанные ПОСЛЕ него,
+   это новая работа: правило их не касается, иначе откат вечно отменял бы
+   всё новое, что делают эти учётки. */
+var ROLLBACK_RULE = { when:'07.10.2026 19:55', until:'09.10.2026 10:31', logins:['hr-analytics','hr@avesto.tj'] };
 function ruleCut(){ return parseWhen(ROLLBACK_RULE.when); }
+function ruleUntil(){ return parseWhen(ROLLBACK_RULE.until); }
 function ruleExcludes(h){
   if(!h || !h.ts) return false;
   var c = ruleCut(); if(!c) return false;
-  if(new Date(h.ts).getTime() <= c) return false;
+  var t = new Date(h.ts).getTime();
+  if(t <= c) return false;
+  var u = ruleUntil(); if(u && t > u) return false;     /* новее правила — не отменяем */
   return ROLLBACK_RULE.logins.indexOf(String(h.user||'').toLowerCase()) >= 0;
 }
 function parseWhen(txt){
@@ -2910,10 +2917,12 @@ function parseWhen(txt){
   if(!m) return null;
   return new Date(+m[3], +m[2]-1, +m[1], +m[4], +m[5], 0).getTime();
 }
-function rollbackAfter(cutMs, logins){
+function rollbackAfter(cutMs, logins, untilMs){
   var low = logins.map(function(x){ return String(x).trim().toLowerCase(); }).filter(Boolean);
   function excluded(h){
-    if(new Date(h.ts).getTime() <= cutMs) return false;
+    var t = new Date(h.ts).getTime();
+    if(t <= cutMs) return false;
+    if(untilMs && t > untilMs) return false;            /* сделано после назначения отката — это новая работа */
     return low.length ? low.indexOf(String(h.user||'').toLowerCase())>=0 : true;
   }
   var hist = getHist().filter(function(h){
