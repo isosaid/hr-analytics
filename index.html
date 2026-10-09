@@ -468,6 +468,7 @@
           <div class="editor-toolbar">
             <input type="text" id="histSearch" placeholder="Поиск по пользователю, полю, значению…">
             <button class="btn primary" id="restoreEditsBtn">↻ Восстановить правки из журнала</button>
+            <button class="btn" id="rollbackBtn">↺ Отменить правки после даты</button>
             <button class="btn" id="clearHistBtn">Очистить журнал</button>
           </div>
           <div class="scroll-box" style="max-height:520px"><table class="dt hist-tbl">
@@ -2449,7 +2450,7 @@ function gsRefresh(){ gsFetchData(false).catch(function(){}); }
 /* фоновое обновление */
 var GS_TIMER = null;
 var GS_FETCHED = false;   /* видели ли мы таблицу в этой сессии */
-var BUILD = '2026-10-08f';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-09';   /* версия сборки — видна в подвале и в журнале входов */
 function gsStartAuto(){
   if(GS_TIMER){ clearInterval(GS_TIMER); GS_TIMER=null; }
   var mins = parseInt(DB.get('gsauto', 3), 10);
@@ -2574,6 +2575,8 @@ function renderHistory(){
      остальным на вкладке «История» остаётся журнал входов */
   var rb = document.getElementById('restoreEditsBtn');
   if(rb) rb.style.display = isAdmin() ? '' : 'none';
+  var rbk = document.getElementById('rollbackBtn');
+  if(rbk) rbk.style.display = isAdmin() ? '' : 'none';
   ['histCard','snapCard','reconCard','hKpiRow'].forEach(function(id){
     var el = document.getElementById(id);
     if(el) el.style.display = isAdmin() ? '' : 'none';
@@ -2762,55 +2765,57 @@ document.getElementById('histBody').addEventListener('click', function(e){
 /* ---- восстановление правок из журнала ----
    журнал хранит каждую правку (кто, какая строка, поле, было → стало),
    поэтому по нему можно заново собрать набор правок, если он потерялся */
-function restoreEditsFromHistory(){
-  var hist = getHist().filter(function(h){
-    return !h.bulk && h.field && h.field!=='__row' && (h.k || h.i!=null || h.id!=null);
-  }).slice().sort(function(a,b){ return String(a.ts||'').localeCompare(String(b.ts||'')); });
-
+/* ---- подбор строки по записи журнала ----
+   номера заявок повторяются у разных предприятий, поэтому круг кандидатов
+   сужаем по компаниям той учётки, которая делала правку */
+function histSrcByKey(){
+  var m = {}; RAW.forEach(function(r){ m[r._k] = r; }); return m;
+}
+function pickRowForHist(h){
+  if(h.k){ var direct = resolveRow(h.k); if(direct) return direct; }
   var byId = {};
   ROWS.forEach(function(r){ var k=String(r.id); (byId[k]=byId[k]||[]).push(r); });
-  var srcByKey = {};
-  RAW.forEach(function(r){ srcByKey[r._k] = r; });
-
-  /* компании автора правки: номера заявок повторяются у разных предприятий,
-     поэтому круг кандидатов сужаем по тому, кто правил */
+  var srcByKey = histSrcByKey();
   var userScope = {};
   getUsers().forEach(function(u){
     var list = (u.companies && u.companies.length) ? u.companies : (u.company ? [u.company] : null);
     if(list) userScope[String(u.login).toLowerCase()] = list.map(companyKey);
   });
-  function sameVal(h, r, useCurrent){
+  function sameVal(r, useCurrent){
     var col = COLS.filter(function(c){ return c.f===h.field; })[0] || {};
     var src = useCurrent ? r : (srcByKey[r._k] || {});
     var v = col.type==='date' ? dateRu(src[h.field]) : (src[h.field]==null?null:String(src[h.field]));
     return String(v==null?'':v) === String(h.before==null?'':h.before);
   }
-  function pickRow(h){
-    if(h.k){ var direct = resolveRow(h.k); if(direct) return direct; }
-    var cand = (byId[String(h.id)] || []).slice();
-    if(!cand.length) return ROWS.filter(function(r){ return r.i===h.i; })[0] || null;
-    var sc = userScope[String(h.user||'').toLowerCase()];
-    if(sc && sc.length){
-      var inScope = cand.filter(function(r){ return sc.indexOf(companyKey(r._company))>=0; });
-      if(inScope.length) cand = inScope;
-    }
-    if(cand.length===1) return cand[0];
-    var byIndex = cand.filter(function(r){ return r.i===h.i; });
-    if(byIndex.length===1) return byIndex[0];
-    var byBefore = cand.filter(function(r){ return sameVal(h, r, false) || sameVal(h, r, true); });
-    if(byBefore.length===1) return byBefore[0];
-    if(byBefore.length>1) cand = byBefore;
-    /* остаётся несколько — берём ближайшую по месту в таблице */
-    if(h.i!=null){
-      cand.sort(function(a,b){ return Math.abs(a.i-h.i)-Math.abs(b.i-h.i); });
-      return cand[0];
-    }
-    return null;
+  var cand = (byId[String(h.id)] || []).slice();
+  if(!cand.length) return ROWS.filter(function(r){ return r.i===h.i; })[0] || null;
+  var sc = userScope[String(h.user||'').toLowerCase()];
+  if(sc && sc.length){
+    var inScope = cand.filter(function(r){ return sc.indexOf(companyKey(r._company))>=0; });
+    if(inScope.length) cand = inScope;
   }
+  if(cand.length===1) return cand[0];
+  var byIndex = cand.filter(function(r){ return r.i===h.i; });
+  if(byIndex.length===1) return byIndex[0];
+  var byBefore = cand.filter(function(r){ return sameVal(r, false) || sameVal(r, true); });
+  if(byBefore.length===1) return byBefore[0];
+  if(byBefore.length>1) cand = byBefore;
+  if(h.i!=null){
+    cand.sort(function(a,b){ return Math.abs(a.i-h.i)-Math.abs(b.i-h.i); });
+    return cand[0];
+  }
+  return null;
+}
+function restoreEditsFromHistory(){
+  var hist = getHist().filter(function(h){
+    return !h.bulk && h.field && h.field!=='__row' && (h.k || h.i!=null || h.id!=null);
+  }).slice().sort(function(a,b){ return String(a.ts||'').localeCompare(String(b.ts||'')); });
+
+  var srcByKey = histSrcByKey();
 
   var ok=0, skip=0, same=0;
   hist.forEach(function(h){
-    var row = pickRow(h);
+    var row = pickRowForHist(h);
     if(!row){ skip++; return; }
     var col = COLS.filter(function(c){ return c.f===h.field; })[0] || {};
     var val = (h.after===null || h.after===undefined || h.after==='')
@@ -2864,6 +2869,85 @@ function maybeAutoRestore(){
   if(m) m.innerHTML = '<span style="color:var(--green)">Правки восстановлены из журнала: '+r.restored+'.</span>';
   renderHistory();
 }
+/* ---- отмена правок, сделанных после указанного момента ----
+   Отменяем только те ячейки, которых после этого момента касались названные учётки.
+   Если ту же ячейку позже правил кто-то другой — его значение остаётся. */
+function parseWhen(txt){
+  var m = String(txt||'').match(/^(\d{2})\.(\d{2})\.(\d{4})[ ,]+(\d{1,2}):(\d{2})$/);
+  if(!m) return null;
+  return new Date(+m[3], +m[2]-1, +m[1], +m[4], +m[5], 0).getTime();
+}
+function rollbackAfter(cutMs, logins){
+  var low = logins.map(function(x){ return String(x).trim().toLowerCase(); }).filter(Boolean);
+  function excluded(h){
+    if(new Date(h.ts).getTime() <= cutMs) return false;
+    return low.length ? low.indexOf(String(h.user||'').toLowerCase())>=0 : true;
+  }
+  var hist = getHist().filter(function(h){
+    return !h.bulk && h.field && h.field!=='__row' && h.ts;
+  }).slice().sort(function(a,b){ return String(a.ts).localeCompare(String(b.ts)); });
+
+  var srcByKey = {};
+  RAW.forEach(function(r){ srcByKey[r._k] = r; });
+  var groups = {};
+  hist.forEach(function(h){
+    if(new Date(h.ts).getTime() <= cutMs) return;        /* до среза — не трогаем */
+    var row = pickRowForHist(h);
+    if(!row) return;
+    var g = row._k + '\u00a7' + h.field;
+    (groups[g] = groups[g] || {row:row, field:h.field, list:[]}).list.push(h);
+  });
+
+  var undone = 0, kept = 0;
+  Object.keys(groups).forEach(function(g){
+    var gr = groups[g], list = gr.list;
+    var lastExcl = -1, lastKeep = -1;
+    list.forEach(function(h, idx){ if(excluded(h)) lastExcl = idx; else lastKeep = idx; });
+    if(lastExcl < 0) return;                              /* эту ячейку названные учётки не трогали */
+    if(lastKeep > lastExcl){ kept++; return; }             /* позже правил кто-то другой — оставляем */
+    var firstExcl = null;
+    for(var i=0;i<list.length;i++){ if(excluded(list[i])){ firstExcl = list[i]; break; } }
+    var col = COLS.filter(function(c){ return c.f===gr.field; })[0] || {};
+    var val = (firstExcl.before===null || firstExcl.before===undefined || firstExcl.before==='')
+            ? null : normalizeInput(firstExcl.before, col.type);
+    var src = srcByKey[gr.row._k] || {};
+    var orig = src[gr.field];
+    var ek = editKey(gr.row, gr.field);
+    if(String(val==null?'':val) === String(orig==null?'':orig)) delete EDITS[ek];
+    else EDITS[ek] = val;
+    undone++;
+  });
+  persistEdits(); assignKeys(); applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
+  return {undone:undone, kept:kept};
+}
+document.getElementById('rollbackBtn').addEventListener('click', function(){
+  if(!isAdmin()){ alert('Отмена доступна администратору.'); return; }
+  var when = prompt('Отменить правки, сделанные ПОСЛЕ этого момента.\nФормат: ДД.ММ.ГГГГ ЧЧ:ММ', '07.10.2026 19:55');
+  if(when===null) return;
+  var cut = parseWhen(when);
+  if(!cut){ alert('Не понял дату. Нужен формат 07.10.2026 19:55'); return; }
+  var who = prompt('Чьи правки отменить? Логины через запятую.\nПусто — отменить правки всех.',
+                   'HR-Analytics, hr@avesto.tj');
+  if(who===null) return;
+  var logins = who.split(',');
+  if(!confirm('Отменить правки после '+when+(who.trim()?(' от: '+who):' от всех учётных записей')+'?\n\n'+
+      'Ячейки, которые позже правил кто-то другой, останутся как есть.\n'+
+      'Перед отменой сохраню версию данных — к ней можно вернуться.')) return;
+  var snaps = getSnaps();
+  snaps.unshift({name:'До отмены правок после '+when, user:SESSION.login, when:nowStr(),
+                 ts:new Date().toISOString(), edits:JSON.parse(JSON.stringify(EDITS))});
+  saveSnaps(snaps.slice(0,30));
+  var было = Object.keys(EDITS).length;
+  var r = rollbackAfter(cut, logins);
+  logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
+    fieldLabel:'Отмена правок после '+when, before:было+' правок', after:Object.keys(EDITS).length+' правок'});
+  var txt = 'Отменено ячеек: '+r.undone+(r.kept?' · оставлено (позже правил другой): '+r.kept:'')+
+            '. Правок было '+было+', стало '+Object.keys(EDITS).length+'.';
+  var m = document.getElementById('impMsg');
+  if(m) m.innerHTML = '<span style="color:var(--green)">'+esc(txt)+'</span>';
+  renderHistory();
+  alert(txt);
+});
 document.getElementById('restoreEditsBtn').addEventListener('click', function(){
   if(!isAdmin()){ alert('Восстановление доступно администратору.'); return; }
   var n = getHist().filter(function(h){ return !h.bulk && h.field && h.field!=='__row'; }).length;
