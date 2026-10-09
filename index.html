@@ -840,6 +840,78 @@ function companyKey(x){
   x = x.replace(/[^a-zа-яё0-9]+/g,' ').trim();
   return x;
 }
+/* ---- подсказка, когда у учётки нет строк ----
+   Название подразделения в Google Sheets могли переписать — тогда учётка,
+   привязанная к прежнему названию, видит пустую таблицу. Ищем похожие названия
+   и показываем их, чтобы причина была видна сразу, а не выглядела как пропажа данных. */
+var TRANSLIT = {'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'e','ж':'j','з':'z','и':'i','й':'i',
+ 'к':'k','л':'l','м':'m','н':'n','о':'o','п':'p','р':'r','с':'s','т':'t','у':'u','ф':'f','х':'h',
+ 'ц':'c','ч':'ch','ш':'sh','щ':'sh','ъ':'','ы':'i','ь':'','э':'e','ю':'u','я':'a'};
+function latinKey(x){
+  return companyKey(x).replace(/[а-яё]/g, function(ch){
+    return TRANSLIT[ch]!==undefined ? TRANSLIT[ch] : ch; }).replace(/[^a-z0-9]+/g,'');
+}
+/* слова, встречающиеся у многих подразделений («Душанбе»), для сравнения бесполезны:
+   без них «Форум Душанбе» и «Душанбе Сити Банк» перестают выглядеть похожими */
+function commonWords(names){
+  var cnt = {};
+  (names||[]).forEach(function(n){
+    var seen = {};
+    companyKey(n).split(' ').forEach(function(t){
+      if(!t || seen[t]) return; seen[t]=1; cnt[t]=(cnt[t]||0)+1;
+    });
+  });
+  var out = {};
+  Object.keys(cnt).forEach(function(t){ if(cnt[t]>=3) out[t]=1; });
+  return out;
+}
+function distinctive(name, common){
+  var toks = companyKey(name).split(' ').filter(function(t){ return t && !(common&&common[t]); });
+  return toks.length ? toks.join(' ') : companyKey(name);
+}
+/* есть ли у названий общее заметное слово (с точностью до латиницы/кириллицы) */
+function sharesWord(a, b){
+  var ta = String(a).split(' ').map(latinKey).filter(function(t){ return t.length>=3; });
+  var tb = String(b).split(' ').map(latinKey).filter(function(t){ return t.length>=3; });
+  return ta.some(function(x){
+    return tb.some(function(y){
+      if(x===y) return true;
+      var n = Math.min(x.length, y.length);
+      return n>=4 && x.slice(0,n)===y.slice(0,n);
+    });
+  });
+}
+function similarName(a, b){            /* коэффициент Дайса по парам букв: 1 — одно и то же */
+  a = latinKey(a); b = latinKey(b);
+  if(!a || !b) return 0;
+  if(a === b) return 1;
+  function pairs(s){ var p=[]; for(var i=0;i<s.length-1;i++) p.push(s.slice(i,i+2)); return p; }
+  var pa = pairs(a), pb = pairs(b), hit = 0, used = {};
+  pa.forEach(function(p){
+    for(var j=0;j<pb.length;j++){ if(pb[j]===p && !used[j]){ used[j]=1; hit++; break; } }
+  });
+  return (2*hit) / (pa.length + pb.length);
+}
+function companiesInData(){
+  var have = {};
+  (typeof ROWS!=='undefined'?ROWS:[]).forEach(function(r){ have[companyKey(r._company)] = r._company; });
+  return have;
+}
+/* по списку подразделений учётки — те, которых нет в таблице, и похожие на них названия */
+function missingCompanies(list){
+  var have = companiesInData(), names = Object.keys(have).map(function(k){ return have[k]; });
+  var common = commonWords(names.concat(list||[]));
+  return (list||[]).filter(function(c){ return !have[companyKey(c)]; }).map(function(c){
+    var near = names.map(function(n){
+        var a = distinctive(c, common), b = distinctive(n, common);
+        return {name:n, s:similarName(a,b), tok:sharesWord(a,b)};
+      })
+      /* либо очень похоже целиком, либо совпадает заметное слово («Doro Pay» и «Doro Moliya») */
+      .filter(function(x){ return x.s >= 0.6 || (x.s >= 0.4 && x.tok); })
+      .sort(function(a,b){ return b.s - a.s; }).slice(0,3).map(function(x){ return x.name; });
+    return {company:c, near:near};
+  });
+}
 /* из всех вариантов написания выбираем самый полный как отображаемый */
 /* Компании, отображаемые в диаграмме «Показатели рекрутинга по подразделениям».
    Список задан вручную: мелкие проекты и филиалы в диаграмму не выводим. */
@@ -1583,6 +1655,23 @@ function setEditHint(){
     ? 'Нажмите на любую ячейку, чтобы изменить значение — правки сохраняются сразу.' +
       (isCompanyUser() ? ' Вам доступны данные: ' + sessionCompanies().join(', ') + '.' : '')
     : 'Просмотр без права редактирования.';
+  /* если по подразделению учётки в таблице нет ни строки — объясняем, почему пусто */
+  if(isCompanyUser()){
+    var miss = missingCompanies(sessionCompanies());
+    var renamed = miss.filter(function(m){ return m.near.length; });
+    var empty   = miss.filter(function(m){ return !m.near.length; });
+    if(renamed.length){
+      el.innerHTML += '<br><span style="color:var(--red)">' + renamed.map(function(m){
+          return 'В таблице нет строк с подразделением «' + esc(m.company) + '» — возможно, его переименовали в ' +
+            m.near.map(function(n){ return '«'+esc(n)+'»'; }).join(' или ') + '.';
+        }).join(' ') +
+        ' Проверьте колонку «Подразделение» в Google Sheets или сообщите в отдел автоматизации.</span>';
+    }
+    if(empty.length){
+      el.innerHTML += '<br><span style="color:var(--muted)">Заявок по ' +
+        empty.map(function(m){ return '«'+esc(m.company)+'»'; }).join(', ') + ' в таблице пока нет.</span>';
+    }
+  }
 }
 function renderPivot(){
   setEditHint();
@@ -2450,7 +2539,7 @@ function gsRefresh(){ gsFetchData(false).catch(function(){}); }
 /* фоновое обновление */
 var GS_TIMER = null;
 var GS_FETCHED = false;   /* видели ли мы таблицу в этой сессии */
-var BUILD = '2026-10-09c';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-09d';   /* версия сборки — видна в подвале и в журнале входов */
 function gsStartAuto(){
   if(GS_TIMER){ clearInterval(GS_TIMER); GS_TIMER=null; }
   var mins = parseInt(DB.get('gsauto', 3), 10);
@@ -2609,8 +2698,15 @@ function renderHistory(){
       :u.role==='staff'?'Сотрудник Авесто'
       :u.role==='company'?'Компания':'Наблюдатель';
     return '<tr><td><b>'+esc(u.login)+'</b>'+(SESSION&&u.login===SESSION.login?' <span class="pill amber">вы</span>':'')+
-      (function(){ var list = (u.companies&&u.companies.length)?u.companies.join(' · '):(u.company||'');
-        return list?'<br><span style="font-size:11px;color:var(--muted)">'+esc(list)+'</span>':''; })()+'</td>'+
+      (function(){ var own = (u.companies&&u.companies.length)?u.companies:(u.company?[u.company]:[]);
+        if(!own.length) return '';
+        var miss = {}; missingCompanies(own).forEach(function(m){ miss[companyKey(m.company)] = m.near; });
+        return '<br><span style="font-size:11px;color:var(--muted)">' + own.map(function(c){
+          var near = miss[companyKey(c)];
+          if(!near) return esc(c);
+          if(!near.length) return esc(c)+' <span style="opacity:.75">(заявок нет)</span>';
+          return '<span style="color:var(--red)">'+esc(c)+' — нет строк, похоже на «'+esc(near[0])+'»</span>';
+        }).join(' · ') + '</span>'; })()+'</td>'+
       '<td>'+roleName+(u.initPass?'<br><span style="font-size:11px;color:var(--muted)">пароль: <b>'+esc(u.initPass)+'</b></span>':'')+'</td>'+
       '<td class="when">'+esc(u.created? dateRu(u.created.slice(0,10)) : '')+'</td>'+
       '<td>'+((users.length>1 && SESSION && u.login!==SESSION.login)
