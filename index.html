@@ -468,6 +468,7 @@
           <div class="editor-toolbar">
             <input type="text" id="histSearch" placeholder="Поиск по пользователю, полю, значению…">
             <button class="btn primary" id="restoreEditsBtn">↻ Восстановить правки из журнала</button>
+            <button class="btn" id="relinkBtn">⇄ Привязать правки после смены подразделений</button>
             <button class="btn" id="rollbackBtn">↺ Отменить правки после даты</button>
             <button class="btn" id="clearHistBtn">Очистить журнал</button>
           </div>
@@ -2566,7 +2567,7 @@ function gsRefresh(){ gsFetchData(false).catch(function(){}); }
 /* фоновое обновление */
 var GS_TIMER = null;
 var GS_FETCHED = false;   /* видели ли мы таблицу в этой сессии */
-var BUILD = '2026-10-09e';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-09f';   /* версия сборки — видна в подвале и в журнале входов */
 function gsStartAuto(){
   if(GS_TIMER){ clearInterval(GS_TIMER); GS_TIMER=null; }
   var mins = parseInt(DB.get('gsauto', 3), 10);
@@ -2693,6 +2694,16 @@ function renderHistory(){
   if(rb) rb.style.display = isAdmin() ? '' : 'none';
   var rbk = document.getElementById('rollbackBtn');
   if(rbk) rbk.style.display = isAdmin() ? '' : 'none';
+  var rl = document.getElementById('relinkBtn');
+  if(rl){
+    rl.style.display = isAdmin() ? '' : 'none';
+    if(isAdmin()){
+      var no = orphanEdits().length;
+      rl.textContent = no ? ('⇄ Привязать правки после смены подразделений ('+fmt(no)+')')
+                          : '⇄ Привязать правки после смены подразделений';
+      rl.classList.toggle('primary', no>0);
+    }
+  }
   ['histCard','snapCard','reconCard','hKpiRow'].forEach(function(id){
     var el = document.getElementById(id);
     if(el) el.style.display = isAdmin() ? '' : 'none';
@@ -2720,6 +2731,8 @@ function renderHistory(){
   var users = getUsers();
   document.getElementById('usersCard').style.display = isAdmin() ? '' : 'none';
   fillCompanyPicker();
+  var seeRows = {};
+  accessReport().forEach(function(a){ seeRows[String(a.login).toLowerCase()] = a.rows; });
   document.getElementById('usersBody').innerHTML = users.map(function(u,idx){
     var roleName = u.role==='admin'?'Администратор'
       :u.role==='staff'?'Сотрудник Авесто'
@@ -2734,7 +2747,11 @@ function renderHistory(){
           if(!near.length) return esc(c)+' <span style="opacity:.75">(заявок нет)</span>';
           return '<span style="color:var(--red)">'+esc(c)+' — нет строк, похоже на «'+esc(near[0])+'»</span>';
         }).join(' · ') + '</span>'; })()+'</td>'+
-      '<td>'+roleName+(u.initPass?'<br><span style="font-size:11px;color:var(--muted)">пароль: <b>'+esc(u.initPass)+'</b></span>':'')+'</td>'+
+      '<td>'+roleName+(u.initPass?'<br><span style="font-size:11px;color:var(--muted)">пароль: <b>'+esc(u.initPass)+'</b></span>':'')+
+        (function(){ var n = seeRows[String(u.login).toLowerCase()];
+          if(n===undefined) return '';
+          return '<br><span style="font-size:11px;color:'+(n?'var(--muted)':'var(--red)')+'">видит строк: '+fmt(n)+'</span>';
+        })()+'</td>'+
       '<td class="when">'+esc(u.created? dateRu(u.created.slice(0,10)) : '')+'</td>'+
       '<td>'+((users.length>1 && SESSION && u.login!==SESSION.login)
         ? '<button class="btn" data-deluser="1" data-login="'+esc(u.login)+'" style="padding:3px 9px;font-size:11.5px">Удалить</button>':'')+'</td></tr>';
@@ -2929,6 +2946,60 @@ function pickRowForHist(h){
   }
   return null;
 }
+/* ---- перепривязка правок после переименования подразделений ----
+   Строка опознаётся связкой «№ заявки + подразделение + дата открытия + позиция».
+   Если подразделение поправили в Google Sheets, правка остаётся без строки.
+   Ищем ту же заявку, не учитывая подразделение, и переносим правку на неё.
+   Переносим только когда кандидат ровно один — иначе легко отдать правку чужой строке. */
+function orphanEdits(){
+  var live = {}; RAW.forEach(function(r){ live[r._k] = r; });
+  return Object.keys(EDITS).filter(function(k){
+    var p = k.indexOf('§'); if(p<0) return false;
+    var rk = k.slice(0,p);
+    return rk.charAt(0)==='s' && !live[rk];
+  });
+}
+function relinkOrphanEdits(){
+  var orph = orphanEdits();
+  var idx = [{}, {}, {}];
+  function add(m, key, r){ (m[key] = m[key] || []).push(r); }
+  RAW.forEach(function(r){
+    add(idx[0], [nrmTxt(r.id), nrmTxt(r.open), nrmTxt(r.pos)].join(KSEP), r);   /* № + дата + позиция */
+    add(idx[1], [nrmTxt(r.id), nrmTxt(r.pos)].join(KSEP), r);                    /* № + позиция */
+    add(idx[2], [nrmTxt(r.id), nrmTxt(r.open)].join(KSEP), r);                   /* № + дата */
+  });
+  var moved=0, same=0, busy=0, left=0;
+  orph.forEach(function(k){
+    var p = k.indexOf('§'), rk = k.slice(0,p), f = k.slice(p+1);
+    var q = rk.split(KSEP);
+    if(q.length < 6){ left++; return; }
+    var id=q[1], open=q[3], pos=q[4];
+    var cand = idx[0][[id,open,pos].join(KSEP)];
+    if(!cand || cand.length!==1) cand = idx[1][[id,pos].join(KSEP)];
+    if(!cand || cand.length!==1) cand = idx[2][[id,open].join(KSEP)];
+    if(!cand || cand.length!==1){ left++; return; }     /* непонятно, какая строка — не угадываем */
+    var row = cand[0], nk = editKey(row, f), val = EDITS[k];
+    if(EDITS[nk]!==undefined){ busy++; delete EDITS[k]; return; }  /* там уже есть правка — чужую не трогаем */
+    delete EDITS[k];
+    var orig = row[f];
+    if(String(val==null?'':val) === String(orig==null?'':orig)){ same++; return; }  /* совпало с таблицей */
+    EDITS[nk] = val; moved++;
+  });
+  if(moved || same || busy){ persistEdits(); applyEdits(); rebuild(); refreshFilterOptions(); renderAll(); }
+  return {orphans:orph.length, moved:moved, same:same, busy:busy, left:left};
+}
+/* сколько строк видит каждая учётка — для сверки доступов */
+function accessReport(){
+  var byKey = {};
+  ROWS.forEach(function(r){ var k=companyKey(r._company); byKey[k]=(byKey[k]||0)+1; });
+  return getUsers().map(function(u){
+    var own = (u.companies&&u.companies.length)?u.companies:(u.company?[u.company]:[]);
+    var n = (u.role==='company')
+      ? own.reduce(function(a,c){ return a + (byKey[companyKey(c)]||0); }, 0)
+      : ROWS.length;
+    return {login:u.login, role:u.role, companies:own, rows:n};
+  });
+}
 function restoreEditsFromHistory(){
   var hist = getHist().filter(function(h){
     if(ruleExcludes(h)) return false;          /* эти правки отменены — не поднимаем */
@@ -3000,6 +3071,28 @@ function forcedRollbackOnce(){
   var m = document.getElementById('impMsg');
   if(m) m.innerHTML = '<span style="color:var(--green)">Отменено ячеек: '+r.undone+
     (r.kept?' · оставлено (позже правил другой): '+r.kept:'')+'.</span>';
+  renderHistory();
+}
+/* разовая перепривязка после массовой правки подразделений в Google Sheets */
+var RELINK_TAG = 'relink-2026-10-09';
+function forcedRelinkOnce(){
+  if(!SESSION || !isAdmin()) return;                 /* правит общие данные — только админ */
+  if(DB.get('relinkdone','') === RELINK_TAG) return;
+  var n = orphanEdits().length;
+  DB.set('relinkdone', RELINK_TAG);
+  if(!n) return;
+  var snaps = getSnaps();
+  snaps.unshift({name:'До перепривязки правок', user:SESSION.login, when:nowStr(),
+                 ts:new Date().toISOString(), edits:JSON.parse(JSON.stringify(EDITS))});
+  saveSnaps(snaps.slice(0,30));
+  var r = relinkOrphanEdits();
+  if(!r.moved && !r.same) return;
+  logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
+    fieldLabel:'Перепривязка правок после смены подразделений',
+    before:r.orphans+' без строки', after:r.moved+' перенесено'});
+  var m = document.getElementById('impMsg');
+  if(m) m.innerHTML = '<span style="color:var(--green)">Правок перенесено на новые подразделения: '+r.moved+
+    (r.same?' · совпало с таблицей: '+r.same:'')+(r.left?' · не определили строку: '+r.left:'')+'.</span>';
   renderHistory();
 }
 function maybeAutoRestore(){
@@ -3125,6 +3218,29 @@ document.getElementById('restoreEditsBtn').addEventListener('click', function(){
   var txt = 'Восстановлено правок: '+r.restored+' · уже совпадает с таблицей: '+r.same+
             (r.skipped? ' · не нашли строку: '+r.skipped : '')+' (записей в журнале: '+r.total+').';
   if(m) m.innerHTML = '<span style="color:var(--green)">'+esc(txt)+'</span>';
+  alert(txt);
+});
+document.getElementById('relinkBtn').addEventListener('click', function(){
+  if(!isAdmin()){ alert('Перепривязка доступна администратору.'); return; }
+  var n = orphanEdits().length;
+  if(!n){ alert('Все правки привязаны к строкам — переносить нечего.'); return; }
+  if(!confirm('Правок без строки: '+n+'.\n\nЭто правки заявок, у которых в Google-таблице сменили подразделение.\n'+
+      'Перенесу их на те же заявки по № + дата открытия + позиция.\n'+
+      'Перед переносом сохраню версию данных.')) return;
+  var snaps = getSnaps();
+  snaps.unshift({name:'До перепривязки правок', user:SESSION.login, when:nowStr(),
+                 ts:new Date().toISOString(), edits:JSON.parse(JSON.stringify(EDITS))});
+  saveSnaps(snaps.slice(0,30));
+  var r = relinkOrphanEdits();
+  logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
+    fieldLabel:'Перепривязка правок после смены подразделений',
+    before:r.orphans+' без строки', after:r.moved+' перенесено'});
+  var txt = 'Правок без строки было: '+r.orphans+'. Перенесено: '+r.moved+
+            ' · совпало с таблицей: '+r.same+(r.busy?' · на новой строке уже была правка: '+r.busy:'')+
+            (r.left?' · не удалось определить строку: '+r.left:'')+'.';
+  var m = document.getElementById('impMsg');
+  if(m) m.innerHTML = '<span style="color:var(--green)">'+esc(txt)+'</span>';
+  renderHistory();
   alert(txt);
 });
 document.getElementById('clearHistBtn').addEventListener('click', function(){
@@ -3389,6 +3505,8 @@ function startApp(user){
   /* журналы приходят из базы не сразу — ждём, пока подтянутся, и восстанавливаем один раз */
   setTimeout(function(){ try{ forcedRestoreOnce(); }catch(e){ console.error('forcedfix', e); } }, 25000);
   setTimeout(function(){ try{ forcedRollbackOnce(); }catch(e){ console.error('rollback', e); } }, 35000);
+  /* после отката — переносим правки, оставшиеся без строки из-за переименования подразделений */
+  setTimeout(function(){ try{ forcedRelinkOnce(); }catch(e){ console.error('relink', e); } }, 45000);
   /* сначала поднимаем правки из общей базы, и только потом тянем таблицу —
      иначе чистый браузер успевал записать пустые правки поверх общих */
   function bootSheet(){ try { gsBoot(); } catch(e){ console.error('gsBoot', e); } }
