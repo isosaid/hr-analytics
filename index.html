@@ -845,7 +845,10 @@ function teamName(r){
    из prefix) считается тем же подразделением, что и to. */
 var COMPANY_ALIASES = [
   {to:'ZET-MOBILE', prefix:['зет','zet'],
-   from:['Зет Мобайл','Зет-Мобайл','ЗетМобайл','Зет Мобаил','ЗЕТ МОБАЙЛ','Zet Mobail','Зет мобил']}
+   from:['Зет Мобайл','Зет-Мобайл','ЗетМобайл','Зет Мобаил','ЗЕТ МОБАЙЛ','Zet Mobail','Зет мобил']},
+  /* Doro Pay переименовали в Doro Moliya — учётка заведена на прежнее название */
+  {to:'ООО "Doro Pay"', prefix:['doro','доро'],
+   from:['ООО "Doro Moliya"','Doro Moliya','Доро Молия','ООО "Доро Молия"','Doro Pay','Доро Пэй']}
 ];
 var ALIAS_MAP = null, ALIAS_PREFIX = null;
 function buildAliases(){
@@ -1280,12 +1283,9 @@ function refreshFilterOptions(){
     fillSelect('f-company', Object.keys(counts).sort(function(a,b){return counts[b]-counts[a];}));
   }
   fc.value = keep;
-  /* у администратора вместо «Подразделение» — TEAM */
+  /* у администратора оба фильтра: TEAM и подразделение — чтобы видеть расхождения между ними */
   var tg = document.getElementById('teamGroup');
   if(tg) tg.style.display = isAdmin() ? '' : 'none';
-  var cg = document.getElementById('companyGroup');
-  if(cg) cg.style.display = isAdmin() ? 'none' : '';
-  if(isAdmin() && fc.value){ fc.value = ''; }   /* скрытый фильтр не должен молча резать данные */
   var ft = document.getElementById('f-team');
   if(ft){
     var tk = ft.value;
@@ -2579,7 +2579,7 @@ function gsRefresh(){ gsFetchData(false).catch(function(){}); }
 /* фоновое обновление */
 var GS_TIMER = null;
 var GS_FETCHED = false;   /* видели ли мы таблицу в этой сессии */
-var BUILD = '2026-10-10a';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-10b';   /* версия сборки — видна в подвале и в журнале входов */
 function gsStartAuto(){
   if(GS_TIMER){ clearInterval(GS_TIMER); GS_TIMER=null; }
   var mins = parseInt(DB.get('gsauto', 3), 10);
