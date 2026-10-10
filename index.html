@@ -1318,10 +1318,14 @@ function applyFilters(opts){
   var tm=(isAdmin() && document.getElementById('f-team')) ? document.getElementById('f-team').value : '';
   var skipStatus = !!(opts && opts.ignoreStatus);
   var scope = isCompanyUser() ? sessionCompanies().map(companyKey) : null;
+  /* если выбранное значение TEAM — это название подразделения, отбираем по подразделению:
+     выбрали компанию — видите только её строки, даже если в чужих строках TEAM заполнен неверно. */
+  var tmKey = tm ? companyKey(tm) : '';
+  var tmIsCompany = !!(tmKey && companiesInData()[tmKey]);
   return ROWS.filter(function(r){
     if(scope && scope.length && scope.indexOf(companyKey(r._company))<0) return false;
     if(co && r._company!==co) return false;
-    if(tm && teamName(r)!==tm) return false;
+    if(tm && (tmIsCompany ? companyKey(r._company)!==tmKey : teamName(r)!==tm)) return false;
     if(ca && r.cat!==ca) return false;
     if(yr && String(r._year)!==yr) return false;
     if(mo && r._month!==mo) return false;
@@ -2615,7 +2619,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-10c';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-10d';   /* версия сборки — видна в подвале и в журнале входов */
 function gsStartAuto(){
   if(GS_TIMER){ clearInterval(GS_TIMER); GS_TIMER=null; }
   var mins = parseInt(DB.get('gsauto', 3), 10);
