@@ -945,7 +945,13 @@ function companiesInData(){
 function missingCompanies(list){
   var have = companiesInData(), names = Object.keys(have).map(function(k){ return have[k]; });
   var common = commonWords(names.concat(list||[]));
-  return (list||[]).filter(function(c){ return !have[companyKey(c)]; }).map(function(c){
+  /* строки, найденные по колонке TEAM, пропажей не считаем */
+  var byTeam = {};
+  ROWS.forEach(function(r){ if(r.team) byTeam[companyKey(r.team)] = 1; });
+  return (list||[]).filter(function(c){
+      var k = companyKey(c);
+      return !have[k] && !byTeam[k];
+    }).map(function(c){
     var near = names.map(function(n){
         var a = distinctive(c, common), b = distinctive(n, common);
         return {name:n, s:similarName(a,b), tok:sharesWord(a,b)};
@@ -1278,13 +1284,20 @@ function refreshFilterOptions(){
   var keep=fc.value;
   var mine = isCompanyUser() ? sessionCompanies() : null;
   if(mine && mine.length){
-    /* учётке компании показываем только её компании */
-    fc.innerHTML = '<option value="">'+(mine.length>1?'Все мои компании':'Все')+'</option>' +
-      mine.map(function(n){ return '<option value="'+esc(n)+'">'+esc(n)+'</option>'; }).join('');
+    /* в списке — названия, как они стоят в таблице у доступных строк;
+       если строк нет, показываем название из учётки */
+    var present = {};
+    scopedRows().forEach(function(r){ if(r._company) present[r._company] = 1; });
+    var list = Object.keys(present);
+    if(!list.length) list = mine.slice();
+    fc.innerHTML = '<option value="">'+(list.length>1?'Все мои компании':'Все')+'</option>' +
+      list.map(function(n){ return '<option value="'+esc(n)+'">'+esc(n)+'</option>'; }).join('');
   } else {
     fillSelect('f-company', Object.keys(counts).sort(function(a,b){return counts[b]-counts[a];}));
   }
   fc.value = keep;
+  /* выбранного значения может уже не быть в списке — тогда показываем всё доступное */
+  if(fc.value && !Array.prototype.some.call(fc.options, function(o){ return o.value===fc.value; })) fc.value = '';
   /* у администратора вместо «Подразделение» — TEAM */
   var tg = document.getElementById('teamGroup');
   if(tg) tg.style.display = isAdmin() ? '' : 'none';
@@ -1307,12 +1320,33 @@ fillSelect('f-cat', CAT_ORDER.filter(function(c){ return ROWS.some(function(r){r
 fillSelect('f-month', MONTHS.filter(function(m){ return ROWS.some(function(r){return r._month===m;}); }));
 refreshFilterOptions();
 
+/* Доступ учётки — по колонке «Подразделение». Но если по её названию в таблице
+   нет ни одной строки, подразделение могли переименовать, а колонку TEAM оставить
+   прежней: тогда ищем строки ещё и по TEAM. Там, где строки по подразделению есть,
+   TEAM не используется — иначе чужая строка с неверным TEAM попала бы в чужой доступ. */
+function scopeFor(list){
+  var keys = (list||[]).map(companyKey).filter(Boolean);
+  if(!keys.length) return null;
+  var have = {};
+  ROWS.forEach(function(r){ have[companyKey(r._company)] = 1; });
+  return {keys:keys, byTeam:keys.filter(function(k){ return !have[k]; })};
+}
+function inScope(r, sc){
+  if(!sc) return true;
+  if(sc.keys.indexOf(companyKey(r._company)) >= 0) return true;
+  if(sc.byTeam.length){
+    var tk = r.team ? companyKey(r.team) : '';
+    if(tk && sc.byTeam.indexOf(tk) >= 0) return true;
+  }
+  return false;
+}
+function sessionScope(){ return isCompanyUser() ? scopeFor(sessionCompanies()) : null; }
 /* строки, доступные учётной записи, без учёта фильтров на экране */
 function scopedRows(){
   if(!isCompanyUser()) return ROWS;
-  var scope = sessionCompanies().map(companyKey);
-  if(!scope.length) return ROWS;
-  return ROWS.filter(function(r){ return scope.indexOf(companyKey(r._company))>=0; });
+  var sc = sessionScope();
+  if(!sc) return ROWS;
+  return ROWS.filter(function(r){ return inScope(r, sc); });
 }
 function applyFilters(opts){
   var co=document.getElementById('f-company').value, ca=document.getElementById('f-cat').value,
@@ -1320,13 +1354,13 @@ function applyFilters(opts){
       st=document.getElementById('f-status').value;
   var tm=(isAdmin() && document.getElementById('f-team')) ? document.getElementById('f-team').value : '';
   var skipStatus = !!(opts && opts.ignoreStatus);
-  var scope = isCompanyUser() ? sessionCompanies().map(companyKey) : null;
+  var scope = sessionScope();
   /* если выбранное значение TEAM — это название подразделения, отбираем по подразделению:
      выбрали компанию — видите только её строки, даже если в чужих строках TEAM заполнен неверно. */
   var tmKey = tm ? companyKey(tm) : '';
   var tmIsCompany = !!(tmKey && companiesInData()[tmKey]);
   return ROWS.filter(function(r){
-    if(scope && scope.length && scope.indexOf(companyKey(r._company))<0) return false;
+    if(!inScope(r, scope)) return false;
     if(co && r._company!==co) return false;
     if(tm && (tmIsCompany ? companyKey(r._company)!==tmKey : teamName(r)!==tm)) return false;
     if(ca && r.cat!==ca) return false;
@@ -2622,7 +2656,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-10e';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-10f';   /* версия сборки — видна в подвале и в журнале входов */
 function gsStartAuto(){
   if(GS_TIMER){ clearInterval(GS_TIMER); GS_TIMER=null; }
   var mins = parseInt(DB.get('gsauto', 3), 10);
@@ -2685,10 +2719,10 @@ function histIsMine(h){
   if(h.user === SESSION.login) return true;              /* собственная правка */
   if(h.bulk) return false;                                /* операции по всему холдингу */
   if(h.i == null) return false;
-  var scope = sessionCompanies().map(companyKey);
+  var sc = sessionScope();
   var row = ROWS.filter(function(r){ return r.i === h.i; })[0];
   if(!row) return false;
-  return scope.indexOf(companyKey(row._company)) >= 0;
+  return inScope(row, sc);
 }
 function renderRecon(){
   var body = document.getElementById('reconBody');
@@ -2731,11 +2765,11 @@ function renderHistory(){
   /* действующие правки: у компании — только по её строкам */
   var editKeys = Object.keys(EDITS);
   if(isCompanyUser()){
-    var sc = sessionCompanies().map(companyKey);
+    var sc = sessionScope();
     editKeys = editKeys.filter(function(k){
       var idx = parseInt(String(k).split(':')[0], 10);
       var row = ROWS.filter(function(r){ return r.i === idx; })[0];
-      return row && sc.indexOf(companyKey(row._company)) >= 0;
+      return row && inScope(row, sc);
     });
   }
   document.getElementById('hKpiEdits').textContent = fmt(editKeys.length);
@@ -3117,8 +3151,9 @@ function accessReport(){
   ROWS.forEach(function(r){ var k=companyKey(r._company); byKey[k]=(byKey[k]||0)+1; });
   return getUsers().map(function(u){
     var own = (u.companies&&u.companies.length)?u.companies:(u.company?[u.company]:[]);
+    var sc = scopeFor(own);
     var n = (u.role==='company')
-      ? own.reduce(function(a,c){ return a + (byKey[companyKey(c)]||0); }, 0)
+      ? (sc ? ROWS.filter(function(r){ return inScope(r, sc); }).length : 0)
       : ROWS.length;
     return {login:u.login, role:u.role, companies:own, rows:n};
   });
@@ -3608,14 +3643,18 @@ function startApp(user){
   var fc = document.getElementById('f-company');
   if(user.role==='company'){
     var mine = sessionCompanies();
-    if(mine.length > 1){
-      /* доступно несколько компаний — оставляем в списке только их */
-      fc.innerHTML = '<option value="">Все мои компании</option>' +
-        mine.map(function(n){ return '<option value="'+esc(n)+'">'+esc(n)+'</option>'; }).join('');
+    /* закрепляем фильтр на том названии, как оно стоит в таблице, а не как записано в учётке */
+    var present = {};
+    scopedRows().forEach(function(r){ if(r._company) present[r._company] = 1; });
+    var list = Object.keys(present);
+    if(!list.length) list = mine.slice();
+    fc.innerHTML = '<option value="">'+(list.length>1?'Все мои компании':'Все')+'</option>' +
+      list.map(function(n){ return '<option value="'+esc(n)+'">'+esc(n)+'</option>'; }).join('');
+    if(list.length > 1){
       fc.value = ''; fc.disabled = false;
       fc.title = 'Вам доступны: ' + mine.join(', ');
     } else {
-      fc.value = mine[0] || ''; fc.disabled = true;
+      fc.value = list[0] || ''; fc.disabled = true;
       fc.title = 'Ваш аккаунт показывает данные только вашей компании';
     }
   } else { fc.value=''; fc.disabled = false; fc.title=''; }
