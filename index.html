@@ -1285,9 +1285,12 @@ function refreshFilterOptions(){
     fillSelect('f-company', Object.keys(counts).sort(function(a,b){return counts[b]-counts[a];}));
   }
   fc.value = keep;
-  /* у администратора оба фильтра: TEAM и подразделение — чтобы видеть расхождения между ними */
+  /* у администратора вместо «Подразделение» — TEAM */
   var tg = document.getElementById('teamGroup');
   if(tg) tg.style.display = isAdmin() ? '' : 'none';
+  var cg = document.getElementById('companyGroup');
+  if(cg) cg.style.display = isAdmin() ? 'none' : '';
+  if(isAdmin() && fc.value){ fc.value = ''; }   /* скрытый фильтр не должен молча резать данные */
   var ft = document.getElementById('f-team');
   if(ft){
     var tk = ft.value;
@@ -2619,7 +2622,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-10d';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-10e';   /* версия сборки — видна в подвале и в журнале входов */
 function gsStartAuto(){
   if(GS_TIMER){ clearInterval(GS_TIMER); GS_TIMER=null; }
   var mins = parseInt(DB.get('gsauto', 3), 10);
