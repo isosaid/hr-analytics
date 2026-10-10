@@ -524,6 +524,18 @@
               <tbody id="reconBody"></tbody></table></div>
           </div>
 
+          <div class="card" id="orgCard">
+            <h3>Подразделения в таблице</h3>
+            <div class="card-sub">Как подразделение записано в Google Sheets, сколько по нему строк и кто его видит.
+              Если у компании пусто — ищите её название здесь.</div>
+            <div class="editor-toolbar">
+              <input type="text" id="orgSearch" placeholder="Поиск по названию подразделения…">
+              <button class="btn" id="expOrgBtn">↓ Выгрузить список</button>
+            </div>
+            <div class="scroll-box" style="max-height:420px"><table class="dt">
+              <thead><tr><th>Подразделение (как в таблице)</th><th class="num">Строк</th><th>Учётные записи</th></tr></thead>
+              <tbody id="orgBody"></tbody></table></div>
+          </div>
           <div class="card" id="usersCard">
             <h3>Пользователи</h3>
             <div class="card-sub">«Компания» видит и правит только свои данные, «Сотрудник Авесто» — весь холдинг,
@@ -2567,7 +2579,7 @@ function gsRefresh(){ gsFetchData(false).catch(function(){}); }
 /* фоновое обновление */
 var GS_TIMER = null;
 var GS_FETCHED = false;   /* видели ли мы таблицу в этой сессии */
-var BUILD = '2026-10-09f';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-10a';   /* версия сборки — видна в подвале и в журнале входов */
 function gsStartAuto(){
   if(GS_TIMER){ clearInterval(GS_TIMER); GS_TIMER=null; }
   var mins = parseInt(DB.get('gsauto', 3), 10);
@@ -2756,9 +2768,24 @@ function renderHistory(){
       '<td>'+((users.length>1 && SESSION && u.login!==SESSION.login)
         ? '<button class="btn" data-deluser="1" data-login="'+esc(u.login)+'" style="padding:3px 9px;font-size:11.5px">Удалить</button>':'')+'</td></tr>';
   }).join('');
+  renderOrgs();
   renderLogins();
   renderRecon();
 }
+document.getElementById('orgSearch').addEventListener('input', renderOrgs);
+document.getElementById('expOrgBtn').addEventListener('click', function(){
+  var lines = ['ПОДРАЗДЕЛЕНИЕ (как в таблице);СТРОК;УЧЁТНЫЕ ЗАПИСИ'];
+  orgReport().forEach(function(e){
+    var names = Object.keys(e.names);
+    lines.push('"'+(names.length?names.join(' / '):(e.onlyAccount||'')).replace(/"/g,'""')+'";'+
+               e.rows+';"'+e.users.join(', ').replace(/"/g,'""')+'"');
+  });
+  var blob = new Blob(['﻿'+lines.join('\r\n')], {type:'text/csv;charset=utf-8;'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'Подразделения и доступы.csv';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1000);
+});
 
 document.getElementById('dbTestBtn').addEventListener('click', function(){
   var msg = document.getElementById('impMsg');
@@ -2987,6 +3014,50 @@ function relinkOrphanEdits(){
   });
   if(moved || same || busy){ persistEdits(); applyEdits(); rebuild(); refreshFilterOptions(); renderAll(); }
   return {orphans:orph.length, moved:moved, same:same, busy:busy, left:left};
+}
+/* перечень подразделений, как они записаны в таблице, с числом строк и владельцами */
+function orgReport(){
+  var byKey = {};
+  ROWS.forEach(function(r){
+    var raw = (r.companyRaw==null || String(r.companyRaw).trim()==='') ? '(пусто)' : String(r.companyRaw).trim();
+    var k = companyKey(r.companyRaw);
+    var e = byKey[k] || (byKey[k] = {key:k, names:{}, rows:0, users:[]});
+    e.names[raw] = (e.names[raw]||0) + 1; e.rows++;
+  });
+  getUsers().forEach(function(u){
+    if(u.role!=='company') return;
+    var own = (u.companies&&u.companies.length)?u.companies:(u.company?[u.company]:[]);
+    own.forEach(function(c){
+      var k = companyKey(c);
+      if(byKey[k]) byKey[k].users.push(u.login);
+      else byKey[k] = {key:k, names:{}, rows:0, users:[u.login], onlyAccount:c};
+    });
+  });
+  return Object.keys(byKey).map(function(k){ return byKey[k]; })
+    .sort(function(a,b){ return b.rows - a.rows; });
+}
+function renderOrgs(){
+  var card = document.getElementById('orgCard');
+  if(!card) return;
+  card.style.display = isAdmin() ? '' : 'none';
+  if(!isAdmin()) return;
+  var q = nrmTxt((document.getElementById('orgSearch')||{}).value || '');
+  var list = orgReport().filter(function(e){
+    if(!q) return true;
+    var hay = Object.keys(e.names).join(' ') + ' ' + (e.onlyAccount||'') + ' ' + e.users.join(' ');
+    /* ищем и по написанию, и с точностью до латиницы/кириллицы: «зет» находит «ZET-MOBILE» */
+    return nrmTxt(hay).indexOf(q) >= 0 || (latinKey(q) && latinKey(hay).indexOf(latinKey(q)) >= 0);
+  });
+  document.getElementById('orgBody').innerHTML = list.length ? list.map(function(e){
+    var names = Object.keys(e.names);
+    var title = names.length ? names.map(function(n){
+        return esc(n) + (names.length>1 ? ' <span style="color:var(--muted)">('+e.names[n]+')</span>' : '');
+      }).join('<br>')
+      : '<span style="color:var(--red)">'+esc(e.onlyAccount||'')+' — в таблице такого названия нет</span>';
+    var who = e.users.length ? esc(e.users.join(', '))
+      : '<span style="color:var(--amber)">нет учётной записи — видят только админы</span>';
+    return '<tr><td>'+title+'</td><td class="num">'+fmt(e.rows)+'</td><td style="font-size:12px">'+who+'</td></tr>';
+  }).join('') : '<tr><td colspan="3" class="empty-note">Ничего не нашлось</td></tr>';
 }
 /* сколько строк видит каждая учётка — для сверки доступов */
 function accessReport(){
