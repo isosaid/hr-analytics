@@ -407,6 +407,7 @@
           <input type="text" id="pivotSearch" placeholder="Поиск по подразделению, позиции, отделу, ФИО…">
           <label class="toggle"><input type="checkbox" id="onlyErrors"> Только строки с ошибками</label>
           <button class="btn" id="undoBtn" disabled>↶ Отменить все правки</button>
+          <button class="btn" id="resetViewBtn">↺ Вернуть видимые строки к данным таблицы</button>
           <button class="btn primary" id="addRowBtn">+ Добавить позицию</button>
           <button class="btn primary" id="exportBtn">↓ Выгрузить в CSV (<span id="exportCount">0</span>)</button>
         </div>
@@ -1077,10 +1078,11 @@ function validateRow(r){
 /* ---------- derived model ---------- */
 var ROWS = RAW.map(function(r){ return Object.assign({}, r); });
 var EDITS = DB.get('edits', {});   /* "i:field" -> новое значение */
+var SHEET_SEEN = false;   /* RAW — это ранее прочитанная таблица, а не встроенный срез */
 (function useSavedSheet(){
   try{
     var saved = DB.get('sheetdata', null);
-    if(saved && saved.length) RAW = saved;
+    if(saved && saved.length){ RAW = saved; SHEET_SEEN = true; }
   }catch(e){}
 })();
 var NEWROWS = DB.get('newrows', []);   /* заявки, добавленные вручную */
@@ -1730,6 +1732,8 @@ function renderPivot(){
   }
   document.getElementById('pivotEdits').textContent = fmt(myEdits.length);
   document.getElementById('undoBtn').disabled = myEdits.length===0;
+  var rv = document.getElementById('resetViewBtn');
+  if(rv) rv.style.display = canManageData() ? '' : 'none';
   var totalBadAll = myRows.filter(function(r){return r._errKeys.length;}).length;
   var badge = document.getElementById('tabBadge');
   badge.textContent = fmt(totalBadAll);
@@ -1980,6 +1984,31 @@ document.getElementById('undoBtn').addEventListener('click', function(){
   rebuild(); refreshFilterOptions(); renderAll();
 });
 
+/* вернуть видимые строки к значениям из Google Sheets: снять по ним все правки */
+document.getElementById('resetViewBtn').addEventListener('click', function(){
+  if(!canManageData()){ alert('Доступно сотрудникам Авесто и администратору.'); return; }
+  var rows = pivotRows().filter(function(r){ return !isNewRow(r.i); });
+  var mine = {}; rows.forEach(function(r){ mine[r._k] = 1; });
+  var keys = Object.keys(EDITS).filter(function(k){ return mine[String(k).split('§')[0]]; });
+  if(!keys.length){ alert('У видимых строк нет правок — они и так показывают данные таблицы.'); return; }
+  if(!confirm('Снять правки с видимых строк и показать значения из Google Sheets?\n\n'+
+      'Строк на экране: '+rows.length+', правок по ним: '+keys.length+'.\n'+
+      'Остальные строки не затрагиваются. Версия данных сохранится — можно вернуться.')) return;
+  var snaps = getSnaps();
+  snaps.unshift({name:'До возврата к данным таблицы', user:SESSION.login, when:nowStr(),
+                 ts:new Date().toISOString(), edits:JSON.parse(JSON.stringify(EDITS))});
+  saveSnaps(snaps.slice(0,30));
+  keys.forEach(function(k){ delete EDITS[k]; });
+  persistEdits(); applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
+  logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
+    fieldLabel:'Возврат видимых строк к данным таблицы',
+    before:keys.length+' правок', after:'значения из Google Sheets'});
+  var m = document.getElementById('impMsg');
+  var txt = 'Снято правок: '+keys.length+' на '+rows.length+' строках — показаны значения из таблицы.';
+  if(m) m.innerHTML = '<span style="color:var(--green)">'+esc(txt)+'</span>';
+  renderHistory();
+  alert(txt);
+});
 /* export */
 function exportCSV(){
   var head = ['№ ЗАЯВКИ','КАТЕГОРИЯ','ПОЗИЦИЯ','ОТДЕЛ','ПОДРАЗДЕЛЕНИЕ','ПОДРАЗДЕЛЕНИЕ (нормализованное)',
@@ -2514,9 +2543,10 @@ function gsFetchData(silent){
         var rk = k.slice(0,pos), f = k.slice(pos+1);
         if(rk.charAt(0)==='m'){ keepE[k] = EDITS[k]; return; }   /* правка в ручной строке */
         var nr = newByKey[rk], was = oldByKey[rk];
-        /* таблица главнее только если это поле в ней действительно изменили
-           и прежнюю версию таблицы мы видели в этой же сессии */
-        if(GS_FETCHED && was && nr && cmpv(was[f]) !== cmpv(nr[f])){ overridden++; return; }
+        /* таблица главнее, если это поле в ней действительно изменили.
+           Сравнивать можно только с настоящей прежней версией таблицы — прочитанной
+           сейчас или сохранённой с прошлого раза; со встроенным срезом сравнивать нельзя. */
+        if(sheetWins(was, nr, f, cmpv)){ overridden++; return; }
         if(!nr) orphan++;            /* строку не нашли — правку НЕ удаляем, вдруг вернётся */
         keepE[k] = EDITS[k];
       });
@@ -2579,7 +2609,13 @@ function gsRefresh(){ gsFetchData(false).catch(function(){}); }
 /* фоновое обновление */
 var GS_TIMER = null;
 var GS_FETCHED = false;   /* видели ли мы таблицу в этой сессии */
-var BUILD = '2026-10-10b';   /* версия сборки — видна в подвале и в журнале входов */
+/* правка уступает таблице, если значение в таблице с тех пор изменили */
+function sheetWins(was, nr, f, cmpv){
+  if(!(GS_FETCHED || SHEET_SEEN)) return false;   /* прежней версии таблицы нет — сравнивать не с чем */
+  if(!was || !nr) return false;
+  return cmpv(was[f]) !== cmpv(nr[f]);
+}
+var BUILD = '2026-10-10c';   /* версия сборки — видна в подвале и в журнале входов */
 function gsStartAuto(){
   if(GS_TIMER){ clearInterval(GS_TIMER); GS_TIMER=null; }
   var mins = parseInt(DB.get('gsauto', 3), 10);
@@ -2995,7 +3031,7 @@ function relinkOrphanEdits(){
     add(idx[1], [nrmTxt(r.id), nrmTxt(r.pos)].join(KSEP), r);                    /* № + позиция */
     add(idx[2], [nrmTxt(r.id), nrmTxt(r.open)].join(KSEP), r);                   /* № + дата */
   });
-  var moved=0, same=0, busy=0, left=0;
+  var moved=0, same=0, busy=0, left=0, stale=0;
   orph.forEach(function(k){
     var p = k.indexOf('§'), rk = k.slice(0,p), f = k.slice(p+1);
     var q = rk.split(KSEP);
@@ -3005,15 +3041,24 @@ function relinkOrphanEdits(){
     if(!cand || cand.length!==1) cand = idx[1][[id,pos].join(KSEP)];
     if(!cand || cand.length!==1) cand = idx[2][[id,open].join(KSEP)];
     if(!cand || cand.length!==1){ left++; return; }     /* непонятно, какая строка — не угадываем */
-    var row = cand[0], nk = editKey(row, f), val = EDITS[k];
+    var row = cand[0];
+    /* ключ строки сменился потому, что одно из этих полей поправили в Google Sheets.
+       Правку именно на это поле возвращать нельзя — иначе она снова затрёт таблицу. */
+    var fixedInSheet = {};
+    if(nrmTxt(row.id)   !== id)   fixedInSheet.id = 1;
+    if(nrmTxt(row.open) !== open) fixedInSheet.open = 1;
+    if(nrmTxt(row.pos)  !== pos)  fixedInSheet.pos = 1;
+    if(companyKey(row.companyRaw) !== q[2]) fixedInSheet.companyRaw = 1;
+    if(fixedInSheet[f]){ delete EDITS[k]; stale++; return; }   /* в таблице это уже исправлено */
+    var nk = editKey(row, f), val = EDITS[k];
     if(EDITS[nk]!==undefined){ busy++; delete EDITS[k]; return; }  /* там уже есть правка — чужую не трогаем */
     delete EDITS[k];
     var orig = row[f];
     if(String(val==null?'':val) === String(orig==null?'':orig)){ same++; return; }  /* совпало с таблицей */
     EDITS[nk] = val; moved++;
   });
-  if(moved || same || busy){ persistEdits(); applyEdits(); rebuild(); refreshFilterOptions(); renderAll(); }
-  return {orphans:orph.length, moved:moved, same:same, busy:busy, left:left};
+  if(moved || same || busy || stale){ persistEdits(); applyEdits(); rebuild(); refreshFilterOptions(); renderAll(); }
+  return {orphans:orph.length, moved:moved, same:same, busy:busy, left:left, stale:stale};
 }
 /* перечень подразделений, как они записаны в таблице, с числом строк и владельцами */
 function orgReport(){
