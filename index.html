@@ -836,7 +836,12 @@ function normCompany(x){ if(!x) return 'Не указано'; x=String(x).trim()
 function teamName(r){
   var t = (r && r.team!==null && r.team!==undefined) ? String(r.team).trim() : '';
   if(!t) return 'TEAM не указан';
-  return t.replace(/[«»''„""`]/g,'"').replace(/\s+/g,' ').replace(/"\s*$/,'"');
+  t = t.replace(/[«»''„""`]/g,'"').replace(/\s+/g,' ').replace(/"\s*$/,'"');
+  /* если в TEAM записано подразделение, показываем его единым написанием —
+     иначе один и тот же «Комбинати орди Душанбе» двоится в списке фильтра */
+  var k = companyKey(t);
+  if(k && (canonForced()[k] || (typeof COMPANY_CANON!=='undefined' && COMPANY_CANON[k]))) return canonCompany(t);
+  return t;
 }
 /* ключ компании: без кавычек, правовой формы, регистра и лишних пробелов —
    чтобы «Арвис» и «ООО "Арвис"» считались одной организацией */
@@ -1002,10 +1007,23 @@ function buildCompanyRegistry(rows){
     COMPANY_CANON[k] = variants[0];
   });
 }
+/* как подразделение должно писаться в дашборде, какое бы написание ни стояло в таблице */
+var CANON_NAMES = ['ООО "Комбинати орди Душанбе"'];
+var CANON_FORCE = null;
+function canonForced(){
+  if(!CANON_FORCE){
+    CANON_FORCE = {};
+    CANON_NAMES.forEach(function(n){ var k = companyKey(n); if(k) CANON_FORCE[k] = n; });
+  }
+  return CANON_FORCE;
+}
 function canonCompany(x){
   var name = normCompany(x);
   var k = companyKey(name);
-  return (k && COMPANY_CANON[k]) ? COMPANY_CANON[k] : name;
+  if(!k) return name;
+  var forced = canonForced();
+  if(forced[k]) return forced[k];
+  return COMPANY_CANON[k] || name;
 }
 
 /* ---------- validation rules ---------- */
@@ -2661,7 +2679,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-12b';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-12c';   /* версия сборки — видна в подвале и в журнале входов */
 function gsStartAuto(){
   if(GS_TIMER){ clearInterval(GS_TIMER); GS_TIMER=null; }
   var mins = parseInt(DB.get('gsauto', 3), 10);
