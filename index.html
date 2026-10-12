@@ -849,6 +849,9 @@ var COMPANY_ALIASES = [
   {to:'ZET-MOBILE', prefix:['зет','zet','таком','takom'],
    from:['Зет Мобайл','Зет-Мобайл','ЗетМобайл','Зет Мобаил','ЗЕТ МОБАЙЛ','Zet Mobail','Зет мобил',
          'ООО "Таком"','Таком','ООО "Takom"','Takom','ТАКОМ']},
+  /* «Jura Taxi» и «ООО "Джура-такси"» — одно подразделение, просто разные написания */
+  {to:'Jura Taxi', prefix:['jura','джура'],
+   from:['ООО "Джура-такси"','Джура-такси','Джура такси','ООО "Джура такси"','Jura-Taxi','Джура Такси']},
   /* Doro Pay переименовали в Doro Moliya — учётка заведена на прежнее название */
   {to:'ООО "Doro Pay"', prefix:['doro','доро'],
    from:['ООО "Doro Moliya"','Doro Moliya','Доро Молия','ООО "Доро Молия"','Doro Pay','Доро Пэй']}
@@ -2658,7 +2661,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-10h';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-12a';   /* версия сборки — видна в подвале и в журнале входов */
 function gsStartAuto(){
   if(GS_TIMER){ clearInterval(GS_TIMER); GS_TIMER=null; }
   var mins = parseInt(DB.get('gsauto', 3), 10);
