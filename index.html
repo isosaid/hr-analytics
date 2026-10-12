@@ -1704,9 +1704,9 @@ function pivotRows(){
     }
     return true;
   }).sort(function(a,b){
-    var na = isNewRow(a.i)?0:1, nb = isNewRow(b.i)?0:1;
-    if(na!==nb) return na-nb;              /* добавленные вручную — сверху */
-    return na===0 ? b.i-a.i : a.i-b.i;     /* новые: свежие первыми */
+    var na = isNewRow(a.i)?1:0, nb = isNewRow(b.i)?1:0;
+    if(na!==nb) return na-nb;              /* добавленные вручную — в конце списка */
+    return a.i-b.i;                        /* внутри каждой группы — по порядку добавления */
   });
 }
 
@@ -2661,7 +2661,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-12a';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-12b';   /* версия сборки — видна в подвале и в журнале входов */
 function gsStartAuto(){
   if(GS_TIMER){ clearInterval(GS_TIMER); GS_TIMER=null; }
   var mins = parseInt(DB.get('gsauto', 3), 10);
