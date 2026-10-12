@@ -1984,15 +1984,28 @@ document.getElementById('pivotBody').addEventListener('keydown', function(e){
   }
 });
 
+/* следующий свободный номер заявки внутри подразделения */
+function nextIdFor(company){
+  var key = company ? companyKey(company) : '';
+  var used = {}, max = 0;
+  ROWS.forEach(function(r){
+    if(key && companyKey(r._company || r.companyRaw) !== key) return;
+    var n = toNum(r.id);
+    if(n===null || isNaN(n)) return;
+    used[n] = 1; if(n > max) max = n;
+  });
+  var n = max + 1;
+  while(used[n]) n++;
+  return n;
+}
 document.getElementById('addRowBtn').addEventListener('click', function(){
   if(!canEdit()){ alert('Недостаточно прав для добавления позиции.'); return; }
-  var maxI = 900000, maxId = 0;
-  ROWS.forEach(function(r){
-    if(r.i>=900000 && r.i>=maxI) maxI = r.i+1;
-    var n = toNum(r.id); if(n!==null && !isNaN(n) && n>maxId) maxId = n;
-  });
+  var maxI = 900000;
+  ROWS.forEach(function(r){ if(r.i>=900000 && r.i>=maxI) maxI = r.i+1; });
   var fc = document.getElementById('f-company').value;
-  var row = {i:maxI, id:maxId+1, cat:null, pos:null, dept:null,
+  /* номер заявки продолжает нумерацию своего подразделения, а не всего холдинга */
+  var maxId = nextIdFor(fc || (isCompanyUser() ? sessionCompanies()[0] : ''));
+  var row = {i:maxI, id:maxId, cat:null, pos:null, dept:null,
     companyRaw:(fc||null), open:null, close:null, days_close:null, hires:1,
     interviews:null, closed_total:null, fio:null, note:null, status:STATUS_OPEN, team:null,
     created:Date.now()};
@@ -2679,7 +2692,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-12c';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-12d';   /* версия сборки — видна в подвале и в журнале входов */
 function gsStartAuto(){
   if(GS_TIMER){ clearInterval(GS_TIMER); GS_TIMER=null; }
   var mins = parseInt(DB.get('gsauto', 3), 10);
@@ -3254,6 +3267,53 @@ function forcedRollbackOnce(){
     (r.kept?' · оставлено (позже правил другой): '+r.kept:'')+'.</span>';
   renderHistory();
 }
+/* ---- номера добавленных вручную заявок — по порядку своего подразделения ----
+   Кнопка раньше брала максимум по всему холдингу, поэтому у строк появлялись
+   номера вроде 538 рядом с 19. Перенумеровываем: каждая такая строка получает
+   следующий свободный номер внутри своей компании, в порядке добавления. */
+function renumberNewRows(){
+  var used = {}, max = {};
+  RAW.forEach(function(r){
+    var k = companyKey(r.companyRaw), n = toNum(r.id);
+    if(!k || n===null || isNaN(n)) return;
+    (used[k] = used[k] || {})[n] = 1;
+    if(!(k in max) || n > max[k]) max[k] = n;
+  });
+  var list = NEWROWS.slice().sort(function(a,b){ return a.i - b.i; });
+  var changed = [];
+  list.forEach(function(r){
+    var k = companyKey(r.companyRaw);
+    if(!k) return;
+    var n = (max[k]===undefined ? 0 : max[k]) + 1;
+    var u = used[k] = used[k] || {};
+    while(u[n]) n++;
+    u[n] = 1; max[k] = n;
+    if(String(r.id) !== String(n)){ changed.push({i:r.i, from:r.id, to:n}); r.id = n; }
+  });
+  if(changed.length){ persistNew(); assignKeys(); applyEdits(); rebuild(); refreshFilterOptions(); renderAll(); }
+  return changed;
+}
+var RENUM_TAG = 'renum-2026-10-12';
+function forcedRenumberOnce(){
+  if(!SESSION || !isAdmin()) return;                 /* правит общие данные — только админ */
+  if(DB.get('renumdone','') === RENUM_TAG) return;
+  DB.set('renumdone', RENUM_TAG);
+  if(!NEWROWS.length) return;
+  var snaps = getSnaps();
+  snaps.unshift({name:'До перенумерации добавленных заявок', user:SESSION.login, when:nowStr(),
+                 ts:new Date().toISOString(), edits:JSON.parse(JSON.stringify(EDITS)),
+                 newrows:JSON.parse(JSON.stringify(NEWROWS))});
+  saveSnaps(snaps.slice(0,30));
+  var ch = renumberNewRows();
+  if(!ch.length) return;
+  logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
+    fieldLabel:'Перенумерация добавленных заявок',
+    before:ch.length+' заявок', after:ch.slice(0,5).map(function(x){ return x.from+'→'+x.to; }).join(', ')+
+      (ch.length>5?' …':'')});
+  var m = document.getElementById('impMsg');
+  if(m) m.innerHTML = '<span style="color:var(--green)">Перенумеровано добавленных заявок: '+ch.length+'.</span>';
+  renderHistory();
+}
 /* разовая перепривязка после массовой правки подразделений в Google Sheets */
 var RELINK_TAG = 'relink-2026-10-09';
 function forcedRelinkOnce(){
@@ -3692,6 +3752,8 @@ function startApp(user){
   setTimeout(function(){ try{ forcedRollbackOnce(); }catch(e){ console.error('rollback', e); } }, 35000);
   /* после отката — переносим правки, оставшиеся без строки из-за переименования подразделений */
   setTimeout(function(){ try{ forcedRelinkOnce(); }catch(e){ console.error('relink', e); } }, 45000);
+  /* номера добавленных вручную заявок — по порядку своего подразделения */
+  setTimeout(function(){ try{ forcedRenumberOnce(); }catch(e){ console.error('renum', e); } }, 55000);
   /* сначала поднимаем правки из общей базы, и только потом тянем таблицу —
      иначе чистый браузер успевал записать пустые правки поверх общих */
   function bootSheet(){ try { gsBoot(); } catch(e){ console.error('gsBoot', e); } }
