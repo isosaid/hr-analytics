@@ -870,7 +870,16 @@ function buildAliases(){
     (a.prefix||[]).forEach(function(p){ var k = companyKeyRaw(p); if(k) ALIAS_PREFIX.push({p:k, to:to}); });
   });
 }
+var CK_MEMO = {}, CK_MEMO_N = 0;
 function companyKey(x){
+  var raw = String(x==null?'':x);
+  if(CK_MEMO[raw] !== undefined) return CK_MEMO[raw];
+  var out = companyKeyCalc(raw);
+  if(CK_MEMO_N > 4000){ CK_MEMO = {}; CK_MEMO_N = 0; }   /* защита от разрастания */
+  CK_MEMO[raw] = out; CK_MEMO_N++;
+  return out;
+}
+function companyKeyCalc(x){
   var k = companyKeyRaw(x);
   if(!ALIAS_MAP) buildAliases();
   if(ALIAS_MAP[k]) return ALIAS_MAP[k];
@@ -946,9 +955,12 @@ function similarName(a, b){            /* коэффициент Дайса по
   });
   return (2*hit) / (pa.length + pb.length);
 }
+var CID_CACHE = null;
 function companiesInData(){
+  if(CID_CACHE) return CID_CACHE;
   var have = {};
   (typeof ROWS!=='undefined'?ROWS:[]).forEach(function(r){ have[companyKey(r._company)] = r._company; });
+  CID_CACHE = have;
   return have;
 }
 /* по списку подразделений учётки — те, которых нет в таблице, и похожие на них названия */
@@ -1280,6 +1292,7 @@ function derive(r, manualDays){
   return d;
 }
 function rebuild(){
+  ROWIDX = null; CID_CACHE = null; SCOPE_CACHE = null;   /* данные изменились — кэши сбрасываем */
   buildCompanyRegistry(ROWS);
   ROWS.forEach(function(r){
     var manual = EDITS.hasOwnProperty(editKey(r,'days_close')) ||
@@ -1363,7 +1376,14 @@ function inScope(r, sc){
   }
   return false;
 }
-function sessionScope(){ return isCompanyUser() ? scopeFor(sessionCompanies()) : null; }
+var SCOPE_CACHE = null, SCOPE_WHO = null;
+function sessionScope(){
+  if(!isCompanyUser()) return null;
+  var who = SESSION ? SESSION.login : '';
+  if(SCOPE_CACHE && SCOPE_WHO === who) return SCOPE_CACHE;
+  SCOPE_WHO = who; SCOPE_CACHE = scopeFor(sessionCompanies());
+  return SCOPE_CACHE;
+}
 /* строки, доступные учётной записи, без учёта фильтров на экране */
 function scopedRows(){
   if(!isCompanyUser()) return ROWS;
@@ -2692,7 +2712,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-13a';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-13b';   /* версия сборки — видна в подвале и в журнале входов */
 function gsStartAuto(){
   if(GS_TIMER){ clearInterval(GS_TIMER); GS_TIMER=null; }
   var mins = parseInt(DB.get('gsauto', 3), 10);
@@ -2749,16 +2769,21 @@ function renderLogins(){
     : '<tr><td colspan="6" class="empty-note">Записей о входах пока нет</td></tr>';
 }
 
+/* указатель строк по номеру — чтобы не перебирать ROWS в цикле */
+var ROWIDX = null;
+function rowByI(i){
+  if(!ROWIDX){ ROWIDX = {}; ROWS.forEach(function(r){ ROWIDX[r.i] = r; }); }
+  return ROWIDX[i];
+}
 /* принадлежит ли запись журнала данным текущей учётной записи компании */
 function histIsMine(h){
   if(!isCompanyUser()) return true;
   if(h.user === SESSION.login) return true;              /* собственная правка */
   if(h.bulk) return false;                                /* операции по всему холдингу */
   if(h.i == null) return false;
-  var sc = sessionScope();
-  var row = ROWS.filter(function(r){ return r.i === h.i; })[0];
+  var row = rowByI(h.i);
   if(!row) return false;
-  return inScope(row, sc);
+  return inScope(row, sessionScope());
 }
 function renderRecon(){
   var body = document.getElementById('reconBody');
@@ -2798,15 +2823,14 @@ function renderHistory(){
   });
   document.getElementById('hKpiTotal').textContent = fmt(hist.length);
 
-  /* действующие правки: у компании — только по её строкам */
+  /* действующие правки: у компании — только по её строкам.
+     Считаем по указателю на строки: перебор ROWS внутри цикла по правкам
+     при тысячах правок подвешивал страницу на секунды. */
   var editKeys = Object.keys(EDITS);
   if(isCompanyUser()){
-    var sc = sessionScope();
-    editKeys = editKeys.filter(function(k){
-      var idx = parseInt(String(k).split(':')[0], 10);
-      var row = ROWS.filter(function(r){ return r.i === idx; })[0];
-      return row && inScope(row, sc);
-    });
+    var sc = sessionScope(), mine = {};
+    ROWS.forEach(function(r){ if(inScope(r, sc)) mine[r._k] = 1; });
+    editKeys = editKeys.filter(function(k){ return mine[String(k).split('\u00a7')[0]]; });
   }
   document.getElementById('hKpiEdits').textContent = fmt(editKeys.length);
 
