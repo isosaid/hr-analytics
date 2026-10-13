@@ -2692,7 +2692,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-12d';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-13a';   /* версия сборки — видна в подвале и в журнале входов */
 function gsStartAuto(){
   if(GS_TIMER){ clearInterval(GS_TIMER); GS_TIMER=null; }
   var mins = parseInt(DB.get('gsauto', 3), 10);
@@ -3271,7 +3271,7 @@ function forcedRollbackOnce(){
    Кнопка раньше брала максимум по всему холдингу, поэтому у строк появлялись
    номера вроде 538 рядом с 19. Перенумеровываем: каждая такая строка получает
    следующий свободный номер внутри своей компании, в порядке добавления. */
-function renumberNewRows(){
+function renumberNewRows(onlyKeys){
   var used = {}, max = {};
   RAW.forEach(function(r){
     var k = companyKey(r.companyRaw), n = toNum(r.id);
@@ -3284,6 +3284,7 @@ function renumberNewRows(){
   list.forEach(function(r){
     var k = companyKey(r.companyRaw);
     if(!k) return;
+    if(onlyKeys && onlyKeys.indexOf(k) < 0) return;   /* чужие подразделения не трогаем */
     var n = (max[k]===undefined ? 0 : max[k]) + 1;
     var u = used[k] = used[k] || {};
     while(u[n]) n++;
@@ -3295,7 +3296,7 @@ function renumberNewRows(){
 }
 var RENUM_TAG = 'renum-2026-10-12';
 function forcedRenumberOnce(){
-  if(!SESSION || !isAdmin()) return;                 /* правит общие данные — только админ */
+  if(!SESSION || !canEdit()) return;                 /* у кого нет права правки — не трогаем */
   if(DB.get('renumdone','') === RENUM_TAG) return;
   DB.set('renumdone', RENUM_TAG);
   if(!NEWROWS.length) return;
@@ -3304,7 +3305,9 @@ function forcedRenumberOnce(){
                  ts:new Date().toISOString(), edits:JSON.parse(JSON.stringify(EDITS)),
                  newrows:JSON.parse(JSON.stringify(NEWROWS))});
   saveSnaps(snaps.slice(0,30));
-  var ch = renumberNewRows();
+  /* учётка компании перенумеровывает только свои строки, администратор — все */
+  var keys = isCompanyUser() ? sessionCompanies().map(companyKey).filter(Boolean) : null;
+  var ch = renumberNewRows(keys);
   if(!ch.length) return;
   logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
     fieldLabel:'Перенумерация добавленных заявок',
