@@ -2500,13 +2500,20 @@ function cloudPull(pathIdx){
         var remote = d['newrows'];
         if(!remote || !Array.isArray(remote.value)) return;
         var local = DB.get('newrows', []) || [];
+        var localTs = DB.get('newrows_ts', 0);
+        /* одну и ту же строку правили в двух местах — берём ту сторону, что свежее.
+           Раньше всегда побеждала база: человек стирал дату, а через минуту она возвращалась. */
+        var localWins = localTs >= remote.ts;
+        var first = localWins ? local : remote.value;
+        var second = localWins ? remote.value : local;
         var seen = {}, out = [];
-        remote.value.concat(local).forEach(function(r){
+        first.concat(second).forEach(function(r){
           if(!r) return;
           var k = 'm' + r.i;
           if(seen[k]) return;
           seen[k] = 1; out.push(r);
         });
+        out.sort(function(a,b){ return a.i - b.i; });
         if(JSON.stringify(out)!==JSON.stringify(local)){
           DB.set('newrows', out); DB.set('newrows_ts', Math.max(remote.ts, DB.get('newrows_ts',0))); touched = true;
         }
@@ -2741,7 +2748,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-14a';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-14b';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
