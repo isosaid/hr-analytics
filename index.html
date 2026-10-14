@@ -2332,6 +2332,27 @@ function cloudSay(txt, color){
   var el = document.getElementById('cloudState');
   if(el) el.innerHTML = '<span style="color:'+(color||'var(--muted)')+'">'+esc(txt)+'</span>';
 }
+/* ---- отметка о сохранении ----
+   Человеку важно видеть не «я нажал», а «ушло в общую базу»: иначе правка,
+   не доехавшая до базы, выглядит сохранённой и потом возвращается обратно. */
+function saveSay(ok, why){
+  var el = document.getElementById('saveState');
+  if(!el){
+    var host = document.getElementById('editHint');
+    if(!host) return;
+    el = document.createElement('span');
+    el.id = 'saveState';
+    el.style.cssText = 'margin-left:10px;font-size:12.5px;font-weight:600';
+    host.appendChild(el);
+  }
+  if(ok){
+    el.style.color = 'var(--green)';
+    el.textContent = '· сохранено в базе ' + nowStr().slice(-5);
+  } else {
+    el.style.color = 'var(--red)';
+    el.textContent = '· НЕ сохранено в базе' + (why ? ' (' + why + ')' : '') + ' — правка только в этом браузере';
+  }
+}
 /* ---- заметное предупреждение, когда общей базы нет ----
    Строчка в шапке мелкая, её не замечают: человек правит ячейки, уверен, что
    сохранил, а правки остаются только в его браузере. Показываем полосу. */
@@ -2396,18 +2417,20 @@ function cloudPush(key, value, attempt){
   fetch(apiBase(), {method:'POST', headers:API_HEAD,
                     body:JSON.stringify(body), cache:'no-store'})
     .then(function(r){
-      if(r.status===501){ CLOUD.on=false; return; }
-      if(r.ok){ CLOUD.on=true; CLOUD.fails=0; return; }
+      if(r.status===501){ CLOUD.on=false; saveSay(false, 'база не подключена'); return; }
+      if(r.ok){ CLOUD.on=true; CLOUD.fails=0; saveSay(true); return; }
       if(CLOUD.viaScript){ jsonpWrite(key, value, (key==='history'||key==='logins')).catch(function(){}); return; }
       if(cloudTransient(r.status) && attempt<2)
         setTimeout(function(){ cloudPush(key, value, attempt+1); }, 3000*(attempt+1));
+      else saveSay(false, 'ответ сервера ' + r.status);
     })
-    .catch(function(){
+    .catch(function(e){
       if(CLOUD.viaScript){
         jsonpWrite(key, value, (key==='history'||key==='logins')).catch(function(){});
         return;
       }
       if(attempt<2) setTimeout(function(){ cloudPush(key, value, attempt+1); }, 3000*(attempt+1));
+      else saveSay(false, (e && e.message) || 'нет связи');
     });
 }
 /* забрать состояние с сервера и слить с локальным */
@@ -2748,7 +2771,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-14b';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-14c';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
