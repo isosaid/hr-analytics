@@ -1909,15 +1909,69 @@ function renderPivot(){
     }).join('');
     var msgs = [];
     for(var f in r._errCells) r._errCells[f].forEach(function(m){ if(msgs.indexOf(m)<0) msgs.push(m); });
+    /* добавленных вручную строк в Google Sheets нет — туда отправлять незачем */
+    if(isNewRow(r.i)) msgs = msgs.map(function(m){
+      return m.replace('поправьте значение в Google Sheets', 'поправьте значение здесь'); });
+    var fixes = canEdit() ? quickFixes(r) : [];
+    var fixHtml = fixes.map(function(x){
+      return ' <button class="btn" data-fix="'+r.i+'" data-fixf="'+x.f+'" data-fixv="'+esc(String(x.val))+
+             '" style="padding:2px 8px;font-size:11px;white-space:nowrap">'+esc(x.label)+'</button>';
+    }).join('');
     return '<tr class="'+(bad?'bad':'')+'">'+
       '<td class="ro"><span class="cell"><span class="rowflag '+(bad?'bad':'ok')+'">'+(bad?'!':'✓')+'</span></span></td>'+
-      tds + '<td class="ro"><span class="err-list">'+esc(msgs.join(' · '))+
+      tds + '<td class="ro"><span class="err-list">'+esc(msgs.join(' · '))+fixHtml+
         (isNewRow(r.i)? '<br><span class="pill amber">добавлена вручную</span>'+
           (canEdit()?' <button class="btn" data-delrow="'+r.i+'" style="padding:2px 8px;font-size:11px">Удалить</button>':'') : '')+
         '</span></td></tr>';
   }).join('');
 }
 
+/* ---- запись значения в ячейку из кода (кнопка «Исправить») ----
+   Делает ровно то же, что ручная правка: сохраняет, пишет в журнал, обновляет экран. */
+function setCellValue(i, f, next){
+  var row = ROWS.find(function(r){ return r.i===i; });
+  if(!row || !canEdit()) return false;
+  var before = row[f];
+  var beforeCmp = (before===null||before===undefined)? null : String(before);
+  var nextCmp = (next===null)? null : String(next);
+  if(beforeCmp===nextCmp) return false;
+  row[f] = next;
+  if(isNewRow(i)){
+    var nr = NEWROWS.find(function(x){ return x.i===i; });
+    if(nr) nr[f] = next;
+    persistNew();
+    var ekM = editKey(row, f);
+    if(EDITS.hasOwnProperty(ekM)){ delete EDITS[ekM]; }
+    persistEdits();
+  } else {
+    var src = RAW.filter(function(x){ return x.i===i; })[0] || {};
+    var origVal = src[f];
+    var origCmp = (origVal===null||origVal===undefined)? null : String(origVal);
+    var ek = editKey(row, f);
+    if(nextCmp===origCmp) delete EDITS[ek]; else EDITS[ek]=next;
+    persistEdits();
+  }
+  var col = COLS.find(function(c){ return c.f===f; }) || {t:f};
+  logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login,
+    i:i, id:row.id, k:row._k, field:f, fieldLabel:col.t,
+    before:(col.type==='date'?dateRu(before):beforeCmp),
+    after:(col.type==='date'?dateRu(next):nextCmp)});
+  return true;
+}
+/* что именно предлагаем исправить одним нажатием */
+function quickFixes(r){
+  var out = [];
+  if(r._errKeys.indexOf('days_mismatch')>=0){
+    var o = parseDate(r.open), c = parseDate(r.close);
+    if(o && c) out.push({key:'days_mismatch', f:'days_close', val:daysBetween(o,c),
+      label:'Поставить срок по датам: '+daysBetween(o,c)});
+  }
+  if(r._errKeys.indexOf('open_has_date')>=0)
+    out.push({key:'open_has_date', f:'status', val:STATUS_CLOSED, label:'Отметить вакансию закрытой'});
+  if(r._errKeys.indexOf('no_left')>=0 && r._errKeys.indexOf('open_has_date')<0)
+    out.push({key:'no_left', f:'status', val:STATUS_CLOSED, label:'Отметить вакансию закрытой'});
+  return out;
+}
 /* editing */
 function normalizeInput(val, type){
   val = String(val).replace(/\s+/g,' ').trim();
@@ -2080,6 +2134,21 @@ function deleteRowById(i){
     deleteRowById(+b.getAttribute('data-delrow'));
   }, true);
 });
+/* кнопка «Исправить» в колонке «Что не так» */
+document.addEventListener('click', function(e){
+  var t = e.target;
+  var b = (t && t.closest) ? t.closest('[data-fix]') : null;
+  if(!b) return;
+  e.preventDefault(); e.stopPropagation();
+  if(!canEdit()){ alert('Недостаточно прав для правки.'); return; }
+  var i = +b.getAttribute('data-fix'), f = b.getAttribute('data-fixf');
+  var raw = b.getAttribute('data-fixv');
+  var col = COLS.find(function(c){ return c.f===f; }) || {};
+  var val = normalizeInput(raw, col.type);
+  if(setCellValue(i, f, val)){
+    assignKeys(); applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
+  }
+}, true);
 
 document.getElementById('undoBtn').addEventListener('click', function(){
   if(!canManageData()){ alert('Массовая отмена правок доступна сотрудникам Авесто и администратору.'); return; }
@@ -2776,7 +2845,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-14d';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-14e';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
