@@ -1951,6 +1951,11 @@ function commitCell(el){
     var nr = NEWROWS.find(function(x){ return x.i===i; });
     if(nr) nr[f] = next;
     persistNew();
+    /* у добавленной вручную строки значение лежит в самой строке.
+       Если на эту же ячейку когда-то завелась правка (например, поднялась из журнала),
+       она при следующей перерисовке ложилась сверху и возвращала старое. Убираем её. */
+    var ekN = editKey(row, f);
+    if(EDITS.hasOwnProperty(ekN)){ delete EDITS[ekN]; persistEdits(); }
   } else {
     var src = RAW.filter(function(x){ return x.i===i; })[0] || {};
     var origVal = src[f];
@@ -2771,7 +2776,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-14c';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-14d';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
@@ -3390,6 +3395,41 @@ function forcedRollbackOnce(){
     (r.kept?' · оставлено (позже правил другой): '+r.kept:'')+'.</span>';
   renderHistory();
 }
+/* ---- правки поверх добавленных вручную строк переносим внутрь самих строк ----
+   Значение такой строки хранится в ней самой, но из журнала на неё могла подняться
+   правка. Тогда при каждой перерисовке правка ложилась сверху и возвращала старое.
+   Переносим значение в строку и правку убираем — на экране ничего не меняется. */
+function foldManualEdits(onlyKeys){
+  var byI = {};
+  NEWROWS.forEach(function(r){ byI[r.i] = r; });
+  var moved = 0;
+  Object.keys(EDITS).forEach(function(k){
+    var p = k.indexOf('\u00a7'); if(p<0) return;
+    var rk = k.slice(0,p), f = k.slice(p+1);
+    if(rk.charAt(0) !== 'm') return;
+    var row = byI[+rk.split(KSEP)[1]];
+    if(!row) return;
+    if(onlyKeys && onlyKeys.indexOf(companyKey(row.companyRaw)) < 0) return;
+    row[f] = EDITS[k];
+    delete EDITS[k];
+    moved++;
+  });
+  if(moved){ persistNew(); persistEdits(); assignKeys(); applyEdits(); rebuild(); renderAll(); }
+  return moved;
+}
+var FOLD_TAG = 'fold-2026-10-14';
+function foldManualEditsOnce(){
+  if(!SESSION || !canEdit()) return;
+  if(DB.get('folddone','') === FOLD_TAG) return;
+  DB.set('folddone', FOLD_TAG);
+  var keys = isCompanyUser() ? sessionCompanies().map(companyKey).filter(Boolean) : null;
+  var n = foldManualEdits(keys);
+  if(!n) return;
+  logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
+    fieldLabel:'Правки добавленных строк перенесены в сами строки',
+    before:n+' правок', after:'перенесено'});
+  renderHistory();
+}
 /* ---- номера добавленных вручную заявок — по порядку своего подразделения ----
    Кнопка раньше брала максимум по всему холдингу, поэтому у строк появлялись
    номера вроде 538 рядом с 19. Перенумеровываем: каждая такая строка получает
@@ -3879,6 +3919,7 @@ function startApp(user){
   /* после отката — переносим правки, оставшиеся без строки из-за переименования подразделений */
   setTimeout(function(){ try{ forcedRelinkOnce(); }catch(e){ console.error('relink', e); } }, 45000);
   /* номера добавленных вручную заявок — по порядку своего подразделения */
+  setTimeout(function(){ try{ foldManualEditsOnce(); }catch(e){ console.error('fold', e); } }, 50000);
   setTimeout(function(){ try{ forcedRenumberOnce(); }catch(e){ console.error('renum', e); } }, 55000);
   /* сверка версии: сразу после входа, затем раз в 15 минут и при возврате на вкладку */
   setTimeout(checkForUpdate, 8000);
