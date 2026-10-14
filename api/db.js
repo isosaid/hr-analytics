@@ -76,8 +76,16 @@ module.exports = async (req, res) => {
       hint: 'Переменные окружения не видны функции. Добавьте их в Production и сделайте Redeploy.' }, null, 2));
     try {
       const pong = await redis(['PING']);
+      // проверяем не только чтение, но и запись — лимиты тарифа гасят именно её
+      let write = 'ok', readback = null;
+      try {
+        const stamp = String(Date.now());
+        await redis(['SET', PREFIX + 'ping', stamp, 'EX', '600']);
+        readback = await redis(['GET', PREFIX + 'ping']);
+        if (readback !== stamp) write = 'значение не сохранилось';
+      } catch (e2) { write = String(e2.message || e2); }
       return res.status(200).end(JSON.stringify({ ok: true, step: 'ping', seen,
-        host: c.url.replace(/^https?:\/\//, ''), pong, node: process.version }, null, 2));
+        host: c.url.replace(/^https?:\/\//, ''), pong, write, readback, node: process.version }, null, 2));
     } catch (e) {
       return res.status(200).end(JSON.stringify({ ok: false, step: 'redis', seen,
         host: c.url.replace(/^https?:\/\//, ''), error: String(e.message || e) }, null, 2));
