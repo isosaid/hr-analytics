@@ -616,12 +616,17 @@ var DB = {
     catch(e){ console.warn('DB full', e); this.mem[key]=s; okw=false; }
     /* зеркалим в общую базу Vercel */
     try{
-      if(typeof CLOUD!=='undefined' && CLOUD.on!==false && CLOUD.keys.indexOf(key)>=0){
+      if(typeof CLOUD!=='undefined' && CLOUD.keys.indexOf(key)>=0){
+        /* отметку времени ставим всегда, даже если база сейчас недоступна:
+           иначе правка, сделанная без связи, проиграет старому значению из базы */
         if(key!=='history' && key!=='logins'){
-          this.mem[key+'_ts']=JSON.stringify(Date.now());
-          try{ if(this.ok) localStorage.setItem(DB_PREFIX+key+'_ts', JSON.stringify(Date.now())); }catch(e2){}
+          var nowTs = JSON.stringify(Date.now());
+          this.mem[key+'_ts']=nowTs;
+          try{ if(this.ok) localStorage.setItem(DB_PREFIX+key+'_ts', nowTs); }catch(e2){}
         }
-        cloudQueue(key);          /* копим и шлём пачкой — чтобы не дёргать базу на каждую ячейку */
+        /* копим и шлём пачкой — чтобы не дёргать базу на каждую ячейку.
+           Если связи нет, ключ всё равно остаётся в очереди и уйдёт, когда она появится. */
+        cloudQueue(key);
       }
     }catch(e3){}
     return okw;
@@ -2327,8 +2332,23 @@ function cloudSay(txt, color){
   var el = document.getElementById('cloudState');
   if(el) el.innerHTML = '<span style="color:'+(color||'var(--muted)')+'">'+esc(txt)+'</span>';
 }
+/* ---- заметное предупреждение, когда общей базы нет ----
+   Строчка в шапке мелкая, её не замечают: человек правит ячейки, уверен, что
+   сохранил, а правки остаются только в его браузере. Показываем полосу. */
+function offlineBar(show, why){
+  var bar = document.getElementById('offBar');
+  if(!show){ if(bar) bar.remove(); return; }
+  if(bar) return;
+  bar = document.createElement('div');
+  bar.id = 'offBar';
+  bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:9998;background:#a8291a;color:#fff;'+
+    'padding:9px 16px;font:600 13px/1.45 inherit;text-align:center;box-shadow:0 -2px 10px rgba(0,0,0,.2)';
+  bar.textContent = 'Нет связи с общей базой' + (why ? ' (' + why + ')' : '') +
+    '. Правки сохраняются только в этом браузере и могут пропасть — сообщите в отдел автоматизации.';
+  document.body.appendChild(bar);
+}
 function cloudOkSay(){ cloudSay('MS Access / SQL — база подключена · синхронизировано ' + nowStr() +
-  (CLOUD.viaScript ? ' · обходной режим' : ''), 'var(--green)'); }
+  (CLOUD.viaScript ? ' · обходной режим' : ''), 'var(--green)'); offlineBar(false); }
 /* отправка значения на сервер (без ожидания) */
 /* ---- очередь записи ----
    правка каждой ячейки раньше отправляла в базу и весь журнал, и весь набор правок.
@@ -2342,6 +2362,11 @@ function cloudQueue(key){
 }
 function cloudFlush(){
   CLOUD_T = null;
+  if(CLOUD.on === false){
+    /* базы сейчас нет — ничего не теряем, попробуем через минуту */
+    if(Object.keys(CLOUD_Q).length) CLOUD_T = setTimeout(cloudFlush, 60000);
+    return;
+  }
   var keys = Object.keys(CLOUD_Q); CLOUD_Q = {};
   keys.forEach(function(k){
     var val = DB.get(k, null);
@@ -2402,7 +2427,8 @@ function cloudPull(pathIdx){
                    body:JSON.stringify({read:askKeys}), cache:'no-store'});
   return req
     .then(function(r){
-      if(r.status===501){ CLOUD.on=false; cloudSay('MS Access / SQL — база не подключена, данные только в этом браузере.'); return null; }
+      if(r.status===501){ CLOUD.on=false; cloudSay('MS Access / SQL — база не подключена, данные только в этом браузере.');
+        offlineBar(true, 'база не подключена'); return null; }
       return r.text().then(function(t){
         var av = blockedByAV(t);
         if(av || r.status===499){
@@ -2515,15 +2541,18 @@ function cloudPull(pathIdx){
       if(e.av){
         cloudSay('MS Access / SQL — соединение с базой блокирует «'+e.message.replace(/^.*«|».*$/g,'')+
           '». Добавьте сайт в исключения антивируса.', 'var(--red)');
+        offlineBar(true, 'запрос блокирует антивирус');
         return null;
       }
       if(CLOUD.fails<6){
-        if(CLOUD.lastPull) cloudOkSay();      /* уже синхронизировались — не пугаем пользователя */
+        if(CLOUD.lastPull && CLOUD.fails<3) cloudOkSay();   /* разрыв на секунду — не пугаем понапрасну */
         else cloudSay('MS Access / SQL — попытка '+CLOUD.fails+': '+e.message, 'var(--amber)');
+        if(CLOUD.fails>=2) offlineBar(true, e.message);     /* правки уходят «в стол» — предупреждаем сразу */
         setTimeout(function(){ cloudPull(); }, Math.min(5000*CLOUD.fails, 30000));
         return null;
       }
       cloudSay('MS Access / SQL — база недоступна: '+e.message+'. Нажмите «Проверить связь с базой» во вкладке История.', 'var(--red)');
+      offlineBar(true, e.message);
       return null;
     });
 }
@@ -2712,7 +2741,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-13c';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-14a';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
