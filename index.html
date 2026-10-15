@@ -1956,13 +1956,17 @@ function renderPivot(){
     if(isNewRow(r.i)) msgs = msgs.map(function(m){
       return m.replace('поправьте значение в Google Sheets', 'поправьте значение здесь'); });
     var fixes = canEdit() ? quickFixes(r) : [];
+    var revertHtml = (canEdit() && rowDiffersFromSheet(r))
+      ? ' <button class="btn" data-sheetback="'+r.i+'" style="padding:2px 8px;font-size:11px;white-space:nowrap"'+
+        ' title="Снять ручные правки этой строки и показать значения из Google Sheets">'+
+        '↺ Как в Google Sheets</button>' : '';
     var fixHtml = fixes.map(function(x){
       return ' <button class="btn" data-fix="'+r.i+'" data-fixf="'+x.f+'" data-fixv="'+esc(String(x.val))+
              '" style="padding:2px 8px;font-size:11px;white-space:nowrap">'+esc(x.label)+'</button>';
     }).join('');
     return '<tr class="'+(bad?'bad':'')+'">'+
       '<td class="ro"><span class="cell"><span class="rowflag '+(bad?'bad':'ok')+'">'+(bad?'!':'✓')+'</span></span></td>'+
-      tds + '<td class="ro"><span class="err-list">'+esc(msgs.join(' · '))+fixHtml+
+      tds + '<td class="ro"><span class="err-list">'+esc(msgs.join(' · '))+fixHtml+revertHtml+
         (isNewRow(r.i)? '<br><span class="pill amber">добавлена вручную</span>'+
           (canEdit()?' <button class="btn" data-delrow="'+r.i+'" style="padding:2px 8px;font-size:11px">Удалить</button>':'') : '')+
         '</span></td></tr>';
@@ -2177,6 +2181,33 @@ function deleteRowById(i){
     deleteRowById(+b.getAttribute('data-delrow'));
   }, true);
 });
+/* вернуть одну строку к значениям из Google Sheets */
+document.addEventListener('click', function(e){
+  var t = e.target;
+  var b = (t && t.closest) ? t.closest('[data-sheetback]') : null;
+  if(!b) return;
+  e.preventDefault(); e.stopPropagation();
+  if(!canEdit()){ alert('Недостаточно прав для правки.'); return; }
+  var i = +b.getAttribute('data-sheetback');
+  var row = ROWS.find(function(r){ return r.i===i; });
+  if(!row) return;
+  var keys = COLS.map(function(c){ return editKey(row, c.f); })
+                 .filter(function(k){ return EDITS.hasOwnProperty(k); });
+  if(!keys.length) return;
+  if(!confirm('Снять ручные правки этой заявки и показать значения из Google Sheets?\n\n'+
+      'Правок в строке: '+keys.length+'. Остальные строки не затрагиваются.\n'+
+      'Версия данных сохранится — вернуться можно.')) return;
+  var snaps = getSnaps();
+  snaps.unshift({name:'До возврата заявки № '+row.id+' к данным таблицы', user:SESSION.login,
+                 when:nowStr(), ts:new Date().toISOString(), edits:JSON.parse(JSON.stringify(EDITS))});
+  saveSnaps(snaps.slice(0,30));
+  keys.forEach(function(k){ delete EDITS[k]; });
+  persistEdits(); assignKeys(); applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
+  logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
+    fieldLabel:'Возврат заявки № '+row.id+' к данным таблицы',
+    before:keys.length+' правок', after:'значения из Google Sheets'});
+  renderHistory();
+}, true);
 /* кнопка «Исправить» в колонке «Что не так» */
 document.addEventListener('click', function(e){
   var t = e.target;
@@ -2889,7 +2920,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-15c';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-15d';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
