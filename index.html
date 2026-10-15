@@ -1339,12 +1339,13 @@ function refreshFilterOptions(){
   fc.value = keep;
   /* выбранного значения может уже не быть в списке — тогда показываем всё доступное */
   if(fc.value && !Array.prototype.some.call(fc.options, function(o){ return o.value===fc.value; })) fc.value = '';
-  /* у администратора вместо «Подразделение» — TEAM */
+  /* фильтр по подразделению — у всех, включая администратора */
   var tg = document.getElementById('teamGroup');
-  if(tg) tg.style.display = isAdmin() ? '' : 'none';
+  if(tg) tg.style.display = 'none';
   var cg = document.getElementById('companyGroup');
-  if(cg) cg.style.display = isAdmin() ? 'none' : '';
-  if(isAdmin() && fc.value){ fc.value = ''; }   /* скрытый фильтр не должен молча резать данные */
+  if(cg) cg.style.display = '';
+  var ftHide = document.getElementById('f-team');
+  if(ftHide && ftHide.value){ ftHide.value = ''; }   /* скрытый фильтр не должен молча резать данные */
   var ft = document.getElementById('f-team');
   if(ft){
     var tk = ft.value;
@@ -1400,7 +1401,10 @@ function applyFilters(opts){
   var co=document.getElementById('f-company').value, ca=document.getElementById('f-cat').value,
       yr=document.getElementById('f-year').value, mo=document.getElementById('f-month').value,
       st=document.getElementById('f-status').value;
-  var tm=(isAdmin() && document.getElementById('f-team')) ? document.getElementById('f-team').value : '';
+  var teamSel = document.getElementById('f-team');
+  var teamShown = teamSel && teamSel.closest && teamSel.closest('.filt-group') &&
+                  teamSel.closest('.filt-group').style.display !== 'none';
+  var tm = teamShown ? teamSel.value : '';
   var skipStatus = !!(opts && opts.ignoreStatus);
   var scope = sessionScope();
   /* если выбранное значение TEAM — это название подразделения, отбираем по подразделению:
@@ -2856,7 +2860,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-15a';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-15b';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
