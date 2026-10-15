@@ -1744,6 +1744,7 @@ function pivotRows(){
   return base.filter(function(r){
     if(subsetMode && SUBSETS[subsetMode] && !SUBSETS[subsetMode].test(r)) return false;
     if(activeIssue==='__added'){ if(!isNewRow(r.i)) return false; }
+    else if(activeIssue==='__diff'){ if(!rowDiffersFromSheet(r)) return false; }
     else if(activeIssue && r._errKeys.indexOf(activeIssue)<0) return false;
     if(onlyErr && !r._errKeys.length) return false;
     if(q){
@@ -1769,6 +1770,12 @@ function renderChips(base){
     .map(function(rule){
       return '<button class="chip'+(activeIssue===rule.key?' on':'')+'" data-key="'+rule.key+'" title="'+esc(rule.msg)+'">'+
              esc(rule.label)+' <span class="cnt">'+fmt(counts[rule.key])+'</span></button>'; }).join('');
+  /* строки, где правка в дашборде расходится со значением в таблице */
+  var diff = base.filter(function(r){ return rowDiffersFromSheet(r); }).length;
+  if(diff) html += '<button class="chip'+(activeIssue==='__diff'?' on':'')+'" data-key="__diff" '+
+    'title="В этих строках значение в дашборде исправлено вручную и отличается от Google Sheets. '+
+    'Наведите курсор на зелёную ячейку — увидите, что стоит в таблице">'+
+    'Отличается от Google Sheets <span class="cnt">'+fmt(diff)+'</span></button>';
   /* строки, которых нет в Google Sheets: их завели кнопкой в дашборде */
   var added = base.filter(function(r){ return isNewRow(r.i); }).length;
   if(added) html += '<button class="chip'+(activeIssue==='__added'?' on':'')+'" data-key="__added" '+
@@ -1782,6 +1789,19 @@ function renderChips(base){
   return badRows;
 }
 
+/* есть ли в строке ячейка, где правка в дашборде расходится с Google Sheets */
+function rowDiffersFromSheet(r){
+  if(isNewRow(r.i)) return false;
+  var src = null;
+  for(var n=0;n<COLS.length;n++){
+    var f = COLS[n].f;
+    if(!EDITS.hasOwnProperty(editKey(r, f))) continue;
+    if(src===null) src = RAW.filter(function(x){ return x.i===r.i; })[0] || {};
+    var a = EDITS[editKey(r, f)], b = src[f];
+    if(String(a==null?'':a) !== String(b==null?'':b)) return true;
+  }
+  return false;
+}
 function cellValue(r, col){
   var v = r[col.f];
   if(v===null||v===undefined) return '';
@@ -1884,6 +1904,15 @@ function renderPivot(){
       var ro = col.ro || !canEdit();
       var cls = ro ? (err ? 'err ro' : 'ro') : (err ? 'err' : (edited ? 'fixed' : ''));
       var title = err ? err.join('; ') : '';
+      /* у правленой ячейки показываем, что стоит в Google Sheets — чтобы расхождение
+         можно было объяснить, не открывая таблицу */
+      if(edited && !isNewRow(r.i)){
+        var srcRow = RAW.filter(function(x){ return x.i===r.i; })[0] || {};
+        var was = srcRow[col.f];
+        var wasTxt = (was===null || was===undefined || String(was)==='')
+          ? 'пусто' : (col.type==='date' ? dateRu(was) : String(was));
+        title = (title ? title + ' · ' : '') + 'Исправлено в дашборде. В Google Sheets: ' + wasTxt;
+      }
       var attrs = ' data-i="'+r.i+'" data-f="'+col.f+'"'+(col.type?' data-type="'+col.type+'"':'');
       var inner;
       /* срок закрытия считается по датам — вручную не правится */
@@ -2860,7 +2889,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-15b';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-15c';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
