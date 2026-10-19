@@ -71,10 +71,13 @@
 
   .grid{display:grid;grid-template-columns:1.35fr 1fr;gap:16px;align-items:start;}
   .grid.half{grid-template-columns:1fr 1fr;}
-  /* обе карточки ряда одной высоты: таблица тянется до низа диаграммы */
+  /* правая карточка ровно по высоте левой: обёртка тянется за диаграммой,
+     а карточка лежит в ней внахлёст и потому не может растянуть ряд сама */
   .grid.equal{align-items:stretch;}
-  .grid.equal > .card{display:flex;flex-direction:column;}
-  .grid.equal > .card > .scroll-box{flex:1 1 auto;min-height:220px;max-height:none;}
+  .grid.equal > .card-fit{position:relative;min-height:340px;}
+  .grid.equal > .card-fit > .card{position:absolute;left:0;right:0;top:0;bottom:0;
+    display:flex;flex-direction:column;}
+  .grid.equal > .card-fit > .card > .scroll-box{flex:1 1 auto;min-height:0;max-height:none;}
   .card{background:var(--card);border-radius:var(--radius);border:1px solid var(--line);padding:18px 20px;margin-bottom:16px;}
   .card h3{margin:0 0 4px;font-size:15.5px;font-weight:800;letter-spacing:-.01em;}
   .card .card-sub{font-size:12px;color:var(--muted);margin-bottom:12px;}
@@ -222,8 +225,10 @@
 
   @media (max-width:1000px){
     .kpi-row,.grid,.grid.half{grid-template-columns:1fr;}
-    /* в одну колонку карточки идут друг под другом — тянуть таблицу незачем */
-    .grid.equal > .card > .scroll-box{max-height:470px;}
+    /* в одну колонку карточки идут друг под другом — подгонять высоту незачем */
+    .grid.equal > .card-fit{position:static;min-height:0;}
+    .grid.equal > .card-fit > .card{position:static;}
+    .grid.equal > .card-fit > .card > .scroll-box{max-height:470px;}
     header.top{padding:14px 14px;} main{padding:14px;} .filters{padding:10px 14px;}
   }
 </style>
@@ -309,7 +314,7 @@
             <span class="legend-item"><span class="dot green"></span>Закрытые позиции</span></div>
           <div class="chart" id="chartByCompany"></div>
         </div>
-        <div class="card">
+        <div class="card-fit"><div class="card">
           <h3 id="openVacTitle">Открытые вакансии по всему холдингу</h3>
           <div class="card-sub"><b id="openVacCount">–</b> вакансий в работе ·
             требуется <b id="openVacHires">–</b> чел. · принято <b id="openVacDone">–</b> ·
@@ -322,7 +327,7 @@
               <th style="text-align:right;width:70px">Принято</th>
               <th style="text-align:right;width:70px">Остаток</th></tr></thead>
             <tbody id="openVacBody"></tbody></table></div>
-        </div>
+        </div></div>
       </div>
       <div class="card">
         <h3>Доля по воронке найма сотрудников</h3>
@@ -2943,7 +2948,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-19a';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-19b';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
