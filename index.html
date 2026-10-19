@@ -2104,6 +2104,19 @@ function commitCell(el){
        она при следующей перерисовке ложилась сверху и возвращала старое. Убираем её. */
     var ekN = editKey(row, f);
     if(EDITS.hasOwnProperty(ekN)){ delete EDITS[ekN]; persistEdits(); }
+    /* Заявку, добавленную при фильтре «Все», нумеровать было не от чего — она получала
+       номер по всему холдингу. Как только подразделение указано, переводим её
+       в нумерацию этого подразделения, иначе рядом с 1–95 стоит 487. */
+    if(f==='companyRaw' && next){
+      var nid = idWithinCompany(i, next);
+      if(nid !== null && String(nid) !== String(row.id)){
+        var oldId = row.id;
+        row.id = nid; if(nr) nr.id = nid; persistNew();
+        logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login,
+          i:i, id:nid, k:row._k, field:'id', fieldLabel:'№ заявки',
+          before:String(oldId), after:String(nid)});
+      }
+    }
   } else {
     var src = RAW.filter(function(x){ return x.i===i; })[0] || {};
     var origVal = src[f];
@@ -2163,6 +2176,25 @@ document.getElementById('pivotBody').addEventListener('keydown', function(e){
 });
 
 /* следующий свободный номер заявки внутри подразделения */
+/* Номер заявки в пределах подразделения. Возвращает null, если нынешний номер
+   уже годится: он свободен и не выбивается из ряда этого подразделения. */
+function idWithinCompany(i, company){
+  var key = companyKey(company);
+  if(!key) return null;
+  var cur = toNum((ROWS.find(function(r){ return r.i===i; })||{}).id);
+  var used = {}, max = 0;
+  ROWS.forEach(function(r){
+    if(r.i===i) return;                                   /* саму строку не считаем */
+    if(companyKey(r._company || r.companyRaw) !== key) return;
+    var n = toNum(r.id);
+    if(n===null || isNaN(n)) return;
+    used[n] = 1; if(n > max) max = n;
+  });
+  if(cur!==null && !isNaN(cur) && !used[cur] && cur <= max+1) return null;  /* всё в порядке */
+  var n = max + 1;
+  while(used[n]) n++;
+  return n;
+}
 function nextIdFor(company){
   var key = company ? companyKey(company) : '';
   var used = {}, max = 0;
@@ -2967,7 +2999,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-19c';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-19d';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
