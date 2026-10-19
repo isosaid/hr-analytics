@@ -439,6 +439,7 @@
           <button class="btn" id="prevPage">← Назад</button>
           <span>Страница <b id="pageNum">1</b> из <b id="pageTotal">1</b></span>
           <button class="btn" id="nextPage">Вперёд →</button>
+          <span id="manualHint" style="display:none;margin-left:12px;color:var(--muted);font-size:12.5px"></span>
         </div>
       </div>
     </section>
@@ -1920,6 +1921,24 @@ function renderPivot(){
   document.getElementById('prevPage').disabled = page<=1;
   document.getElementById('nextPage').disabled = page>=pages;
   var slice = rows.slice((page-1)*PAGE_SIZE, page*PAGE_SIZE);
+  /* строки, добавленные вручную, стоят в конце списка и при длинной выборке
+     уезжают на последнюю страницу — иначе кажется, что заявка пропала */
+  var manFirst = -1, manCount = 0;
+  for(var mi=0; mi<rows.length; mi++){
+    if(isNewRow(rows[mi].i)){ manCount++; if(manFirst<0) manFirst = mi; }
+  }
+  var manOnPage = manFirst>=0 && manFirst>=(page-1)*PAGE_SIZE && manFirst<page*PAGE_SIZE;
+  var mh = document.getElementById('manualHint');
+  if(mh){
+    if(manCount && !manOnPage){
+      mh.style.display='';
+      mh.innerHTML = 'добавленных вручную: <b>'+manCount+'</b> — они в конце списка '+
+        '<button class="btn" id="goManual" style="padding:2px 9px;font-size:11.5px">Показать</button>';
+      var gm = document.getElementById('goManual');
+      if(gm) gm.addEventListener('click', function(){
+        page = Math.floor(manFirst/PAGE_SIZE)+1; renderPivot(); });
+    } else { mh.style.display='none'; mh.innerHTML=''; }
+  }
 
   var body = document.getElementById('pivotBody');
   if(!slice.length){ body.innerHTML='<tr><td colspan="'+(COLS.length+2)+'" class="empty-note">Нет строк по текущим фильтрам</td></tr>'; return; }
@@ -2948,7 +2967,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-19b';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-19c';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
