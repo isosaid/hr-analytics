@@ -1864,8 +1864,20 @@ function setEditHint(){
     }
   }
 }
+/* кто и когда завёл заявку вручную — берём из журнала, чтобы было видно в самой строке */
+var NEWROW_WHO = {};
+function buildNewRowWho(){
+  NEWROW_WHO = {};
+  if(!NEWROWS.length) return;
+  getHist().forEach(function(h){
+    if(h.field!=='__row' || h.i==null) return;
+    if(NEWROW_WHO[h.i]) return;                     /* журнал идёт от свежих к старым */
+    NEWROW_WHO[h.i] = (h.user||'неизвестно') + (h.when ? ', ' + h.when : '');
+  });
+}
 function renderPivot(){
   setEditHint();
+  buildNewRowWho();
   var base = applyFilters();
   var badRows = renderChips(base);
   var badCells = base.reduce(function(a,r){ return a + Object.keys(r._errCells).length; },0);
@@ -1990,9 +2002,12 @@ function renderPivot(){
         inner = '<span class="cell"'+(ro?'':' contenteditable="true" spellcheck="false"')+attrs+'>'+
                 esc(cellValue(r,col))+'</span>';
         /* сразу видно, что строки нет в Google Sheets — её завели здесь */
-        if(col.f==='id' && isNewRow(r.i))
-          inner += '<span class="pill amber" title="Заявка добавлена в дашборде. В Google Sheets её нет."'+
+        if(col.f==='id' && isNewRow(r.i)){
+          var who = NEWROW_WHO[r.i];
+          inner += '<span class="pill amber" title="Заявка добавлена в дашборде. В Google Sheets её нет.'+
+                   (who ? ' Добавил(а): '+esc(who) : '')+'"'+
                    ' style="margin-left:6px;font-size:10px;padding:1px 5px">не в таблице</span>';
+        }
       }
       var tdCls = cls + (ro ? '' : ' editable');
       return '<td class="'+tdCls+'"'+(title?' title="'+esc(title)+'"':'')+'>'+inner+'</td>';
@@ -3009,7 +3024,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-20c';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-20d';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
@@ -3429,23 +3444,32 @@ function pickRowForHist(h){
     return String(v==null?'':v) === String(h.before==null?'':h.before);
   }
   var cand = (byId[String(h.id)] || []).slice();
-  if(!cand.length) return ROWS.filter(function(r){ return r.i===h.i; })[0] || null;
+  if(!cand.length){
+    /* Заявки с таким номером нет. Для добавленной вручную строки внутренний номер
+       свой и не меняется — по нему опознать можно. Для строки из таблицы нельзя:
+       там это позиция в выгрузке, она съезжает при каждом изменении таблицы,
+       и правка легла бы на чужую заявку. */
+    if(h.i!=null && isNewRow(h.i)) return ROWS.filter(function(r){ return r.i===h.i; })[0] || null;
+    return null;
+  }
   var sc = userScope[String(h.user||'').toLowerCase()];
   if(sc && sc.length){
     var inScope = cand.filter(function(r){ return sc.indexOf(companyKey(r._company))>=0; });
     if(inScope.length) cand = inScope;
   }
   if(cand.length===1) return cand[0];
-  var byIndex = cand.filter(function(r){ return r.i===h.i; });
-  if(byIndex.length===1) return byIndex[0];
+  /* Заявок с таким номером несколько. Опознаём по значению, которое правка застала
+     («было»), а внутренний номер — только чтобы выбрать из подошедших по значению:
+     у строк из таблицы это позиция в выгрузке, она съезжает при изменении таблицы.
+     Раньше брали ближайшую по этому номеру — это была догадка, и правка могла лечь
+     на чужую заявку: так ФИО мужчины оказывалось в заявке на уборщицу. */
   var byBefore = cand.filter(function(r){ return sameVal(r, false) || sameVal(r, true); });
   if(byBefore.length===1) return byBefore[0];
-  if(byBefore.length>1) cand = byBefore;
-  if(h.i!=null){
-    cand.sort(function(a,b){ return Math.abs(a.i-h.i)-Math.abs(b.i-h.i); });
-    return cand[0];
+  if(byBefore.length>1){
+    var narrow = byBefore.filter(function(r){ return r.i===h.i; });
+    if(narrow.length===1) return narrow[0];
   }
-  return null;
+  return null;                       /* наверняка не опознать — правку не поднимаем */
 }
 /* ---- перепривязка правок после переименования подразделений ----
    Строка опознаётся связкой «№ заявки + подразделение + дата открытия + позиция».
