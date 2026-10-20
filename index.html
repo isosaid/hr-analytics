@@ -2108,6 +2108,20 @@ function commitCell(el){
        номер по всему холдингу. Как только подразделение указано, переводим её
        в нумерацию этого подразделения, иначе рядом с 1–95 стоит 487. */
     if(f==='companyRaw' && next){
+      /* TEAM у таких заявок повторяет подразделение. Если он показывал прежнее
+         подразделение, переносим и его — иначе строка остаётся наполовину чужой. */
+      var oldKey = before ? companyKey(before) : '';
+      var tKey = row.team ? companyKey(row.team) : '';
+      if(!tKey || (oldKey && tKey===oldKey)){
+        var tBefore = row.team;
+        row.team = next; if(nr) nr.team = next;
+        var ekT = editKey(row, 'team');
+        if(EDITS.hasOwnProperty(ekT)) delete EDITS[ekT];
+        persistNew(); persistEdits();
+        logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login,
+          i:i, id:row.id, k:row._k, field:'team', fieldLabel:'TEAM',
+          before:(tBefore==null?null:String(tBefore)), after:String(next)});
+      }
       var nid = idWithinCompany(i, next);
       if(nid !== null && String(nid) !== String(row.id)){
         var oldId = row.id;
@@ -2999,7 +3013,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-20a';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-20b';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
@@ -3780,6 +3794,46 @@ function moveTakomRowsOnce(){
   if(m2) m2.innerHTML = '<span style="color:var(--green)">Перенесено в ООО «Таком» заявок: '+
     moved.length+'. Версия данных сохранена — откат доступен.</span>';
 }
+/* Перенос 486–490 поменял подразделение, а TEAM у них остался прежним
+   («Гулистони Душанбе»). Доводим до конца: у добавленных вручную заявок
+   TEAM повторяет подразделение. */
+var TEAM_TAG = 'takom-team-2026-10-20';
+function fixManualTeamOnce(){
+  if(!SESSION || !isAdmin()) return;
+  if(DB.get('takomteam','') === TEAM_TAG) return;
+  DB.set('takomteam', TEAM_TAG);
+  if(!NEWROWS.length) return;
+  var bad = ROWS.filter(function(r){
+    if(!isNewRow(r.i)) return false;
+    var ck = companyKey(r._company || r.companyRaw);
+    if(!ck) return false;
+    var tk = r.team ? companyKey(r.team) : '';
+    return tk !== ck;                                  /* TEAM не про своё подразделение */
+  });
+  if(!bad.length) return;
+  var snaps = getSnaps();
+  snaps.unshift({name:'До приведения TEAM к подразделению', user:SESSION.login, when:nowStr(),
+                 ts:new Date().toISOString(), edits:JSON.parse(JSON.stringify(EDITS)),
+                 newrows:JSON.parse(JSON.stringify(NEWROWS))});
+  saveSnaps(snaps.slice(0,30));
+  var done = [];
+  bad.forEach(function(r){
+    var nr = NEWROWS.find(function(x){ return x.i===r.i; });
+    if(!nr) return;
+    var name = r._company || r.companyRaw;
+    done.push({id:r.id, was:r.team});
+    r.team = name; nr.team = name;
+    var ekT = editKey(r, 'team');
+    if(EDITS.hasOwnProperty(ekT)) delete EDITS[ekT];
+  });
+  if(!done.length) return;
+  persistNew(); persistEdits(); assignKeys(); applyEdits(); rebuild();
+  logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
+    fieldLabel:'TEAM приведён к подразделению',
+    before:done.length+' заявок', after:done.slice(0,6).map(function(x){
+      return '№'+x.id+' ('+(x.was||'пусто')+')'; }).join(', ')+(done.length>6?' …':'')});
+  refreshFilterOptions(); renderAll(); renderHistory();
+}
 /* разовая перепривязка после массовой правки подразделений в Google Sheets */
 var RELINK_TAG = 'relink-2026-10-09';
 function forcedRelinkOnce(){
@@ -4222,6 +4276,7 @@ function startApp(user){
   setTimeout(function(){ try{ foldManualEditsOnce(); }catch(e){ console.error('fold', e); } }, 50000);
   setTimeout(function(){ try{ forcedRenumberOnce(); }catch(e){ console.error('renum', e); } }, 55000);
   setTimeout(function(){ try{ moveTakomRowsOnce(); }catch(e){ console.error('takom', e); } }, 60000);
+  setTimeout(function(){ try{ fixManualTeamOnce(); }catch(e){ console.error('team', e); } }, 65000);
   /* сверка версии: сразу после входа, затем раз в 15 минут и при возврате на вкладку */
   setTimeout(checkForUpdate, 8000);
   setInterval(function(){ if(!document.hidden) checkForUpdate(); }, 900000);
