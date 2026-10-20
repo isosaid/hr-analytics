@@ -1160,7 +1160,23 @@ var SHEET_SEEN = false;   /* RAW — это ранее прочитанная т
     if(saved && saved.length){ RAW = saved; SHEET_SEEN = true; }
   }catch(e){}
 })();
-var NEWROWS = DB.get('newrows', []);   /* заявки, добавленные вручную */
+/* Отметки об удалении добавленных вручную заявок.
+   Без них удаление не держалось: слияние с базой объединяет списки, и строка,
+   стёртая здесь, возвращалась из базы при следующей синхронизации. */
+var DELROWS = DB.get('delrows', []) || [];
+function isRowDeleted(i){ return DELROWS.indexOf(i) >= 0; }
+function markRowDeleted(i){
+  if(isRowDeleted(i)) return;
+  DELROWS.push(i);
+  if(DELROWS.length > 500) DELROWS = DELROWS.slice(-500);
+  DB.set('delrows', DELROWS);
+}
+function unmarkRowDeleted(list){
+  var before = DELROWS.length;
+  DELROWS = DELROWS.filter(function(i){ return list.indexOf(i) < 0; });
+  if(DELROWS.length !== before) DB.set('delrows', DELROWS);
+}
+var NEWROWS = (DB.get('newrows', []) || []).filter(function(r){ return r && !isRowDeleted(r.i); });
 /* незаполненные добавленные строки (создали и бросили) не копим — убираем при загрузке */
 /* строка, добавленная кнопкой и брошенная незаполненной: кнопка сама проставляет
    только «кол-во найма» и статус, поэтому смотрим на содержательные поля */
@@ -2268,6 +2284,7 @@ function deleteRowById(i){
   if(!row) return;                       /* уже удалена — второй вызов игнорируем */
   if(!confirm('Удалить добавленную строку № '+(row.id||'')+'?')) return;
   NEWROWS = NEWROWS.filter(function(r){ return r.i!==i; });
+  markRowDeleted(i);                     /* \u0447\u0442\u043e\u0431\u044b \u0441\u0442\u0440\u043e\u043a\u0430 \u043d\u0435 \u0432\u0435\u0440\u043d\u0443\u043b\u0430\u0441\u044c \u0438\u0437 \u0431\u0430\u0437\u044b */
   var pre = row._k + '\u00a7';
   Object.keys(EDITS).forEach(function(k){ if(k.indexOf(pre)===0) delete EDITS[k]; });
   persistNew(); persistEdits(); assignKeys(); applyEdits();
@@ -2524,7 +2541,7 @@ var API_PATHS = ['/data/hr.json','/reports/summary','/hr/data','/service/records
 var API_HEAD = {'Content-Type':'text/plain;charset=UTF-8'};
 var CLOUD = {on:null, base:null,
              /* лёгкие ключи — их тянем каждый раз */
-             keys:['users','edits','newrows','snapshots','gs','removed'],
+             keys:['users','edits','newrows','snapshots','gs','removed','delrows'],
              /* журналы весят под мегабайт: качаем один раз за сеанс и по заходу в «Историю» */
              heavy:['history','logins'], gotHeavy:false,
              journals:{history:HIST_CAP_REF(), logins:LOGIN_CAP_REF()}, pushing:{}, lastPull:0};
@@ -2772,6 +2789,16 @@ function cloudPull(pathIdx){
         }
       })();
       /* добавленные вручную заявки тоже объединяем по ключу строки */
+      /* отметки об удалении сводим объединением: удалили где угодно — значит удалено */
+      (function mergeDel(){
+        var remote = d['delrows'];
+        if(!remote || !Array.isArray(remote.value)) return;
+        var out = DELROWS.slice();
+        remote.value.forEach(function(i){ if(out.indexOf(i)<0) out.push(i); });
+        if(out.length !== DELROWS.length){
+          DELROWS = out; DB.set('delrows', DELROWS); touched = true;
+        }
+      })();
       (function mergeNew(){
         var remote = d['newrows'];
         if(!remote || !Array.isArray(remote.value)) return;
@@ -2785,6 +2812,7 @@ function cloudPull(pathIdx){
         var seen = {}, out = [];
         first.concat(second).forEach(function(r){
           if(!r) return;
+          if(isRowDeleted(r.i)) return;      /* заявку удалили — из базы её не поднимаем */
           var k = 'm' + r.i;
           if(seen[k]) return;
           seen[k] = 1; out.push(r);
@@ -2807,7 +2835,8 @@ function cloudPull(pathIdx){
       if(touched){
         try{
           EDITS = DB.get('edits', {});
-          NEWROWS = DB.get('newrows', []);
+          DELROWS = DB.get('delrows', []) || [];
+          NEWROWS = (DB.get('newrows', []) || []).filter(function(r){ return r && !isRowDeleted(r.i); });
           dropBlankNewRows();
           assignKeys(); applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
           try{ maybeAutoRestore(); }catch(e2){ console.error('autofix', e2); }
@@ -3024,7 +3053,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-20d';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-20e';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
