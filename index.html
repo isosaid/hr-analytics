@@ -1104,7 +1104,18 @@ var RULES = [
    test:function(r){ var d=toNum(r.days_close); return d!==null && !isNaN(d) && d<0; },
    msg:'Количество дней на закрытие не может быть отрицательным'},
   {key:'days_empty',     field:'days_close',label:'Не заполнены дни на закрытие',
-   test:function(r){ return r.status===STATUS_CLOSED && (r.days_close===null||String(r.days_close).trim()===''); },
+   /* срок считается по датам, поэтому смотрим на то, что показано в ячейке,
+      а не на исходное поле: иначе заявка с проставленными датами числилась ошибочной */
+   test:function(r){
+     if(r.status!==STATUS_CLOSED) return false;
+     var shown = (r._days_close===undefined) ? r.days_close : r._days_close;
+     if(shown!==null && shown!==undefined && String(shown).trim()!=='') return false;
+     var o=parseDate(r.open), c=parseDate(r.close);
+     /* обе даты стоят — срок либо посчитан, либо даты перепутаны местами,
+        а про это уже говорит отдельная проверка; второй раз не повторяем */
+     if(o && c && o!==undefined && c!==undefined) return false;
+     return true;
+   },
    msg:'Вакансия закрыта, но срок закрытия не проставлен'},
   {key:'interviews_empty',field:'interviews',label:'Не заполнены собеседования',
    test:function(r){ var v=toNum(r.interviews);
@@ -3053,7 +3064,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-20e';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-20f';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
