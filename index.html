@@ -2999,7 +2999,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-19d';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-20a';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
@@ -3703,6 +3703,83 @@ function forcedRenumberOnce(){
   if(m) m.innerHTML = '<span style="color:var(--green)">Перенумеровано добавленных заявок: '+ch.length+'.</span>';
   renderHistory();
 }
+/* Разовый перенос заявок 486–490 в ООО «Таком».
+   Их добавили при фильтре «Все», подразделение подставилось чужое («Гулистони Душанбе»,
+   «Доро Молия»), хотя отделы и позиции телекомовские, а «Техник по ТО/АВР БС»
+   в «Своде таблиц» числится за Таком. Берём только строки с телекомовскими отделами,
+   чтобы случайно не задеть чужие заявки с такими же номерами. */
+var TAKOM_TAG = 'takom-2026-10-20';
+var TAKOM_IDS = [486,487,488,489,490];
+function moveTakomRowsOnce(){
+  if(!SESSION || !isAdmin()) return;                 /* правит общие данные — только админ */
+  if(DB.get('takomdone','') === TAKOM_TAG) return;
+  DB.set('takomdone', TAKOM_TAG);
+  if(!NEWROWS.length) return;
+  var targets = ROWS.filter(function(r){
+    if(!isNewRow(r.i)) return false;
+    var n = toNum(r.id);
+    if(n===null || TAKOM_IDS.indexOf(n) < 0) return false;
+    if(companyKey(r._company) === companyKey('ООО "Таком"')) return false;   /* уже там */
+    return /^\s*(коммерческая|техническая)\s+дирекц/i.test(String(r.dept||''));
+  });
+  if(!targets.length) return;
+  var snaps = getSnaps();
+  snaps.unshift({name:'До переноса заявок 486–490 в ООО «Таком»', user:SESSION.login,
+                 when:nowStr(), ts:new Date().toISOString(),
+                 edits:JSON.parse(JSON.stringify(EDITS)),
+                 newrows:JSON.parse(JSON.stringify(NEWROWS))});
+  saveSnaps(snaps.slice(0,30));
+  /* пишем то название, под которым подразделение уже значится в дашборде
+     (у этой группы это «ZET-MOBILE»), иначе пятью строками переименуем всю группу */
+  var TAKOM_NAME = canonCompany('ООО "Таком"') || 'ООО "Таком"';
+  var moved = [];
+  targets.forEach(function(r){
+    var nr = NEWROWS.find(function(x){ return x.i===r.i; });
+    if(!nr) return;
+    var wasC = r.companyRaw, wasId = r.id;
+    nr.companyRaw = TAKOM_NAME; r.companyRaw = nr.companyRaw;
+    /* если на подразделение этой строки когда-то легла правка, она вернёт старое значение */
+    [ 'companyRaw', 'team' ].forEach(function(f){
+      var ek = editKey(r, f);
+      if(EDITS.hasOwnProperty(ek)) delete EDITS[ek];
+    });
+    moved.push({i:r.i, wasC:wasC, wasId:wasId});
+  });
+  if(!moved.length) return;
+  persistNew(); persistEdits(); assignKeys(); applyEdits(); rebuild();
+  /* Номера были холдинговые — ставим их в нумерацию Таком.
+     Считаем максимум только по чужим строкам: иначе перенесённые заявки,
+     ещё не перенумерованные, сами себе задирают максимум и остаются с 486–490. */
+  var tk = companyKey('ООО "Таком"'), movedI = {};
+  moved.forEach(function(m){ movedI[m.i] = 1; });
+  var used = {}, max = 0;
+  ROWS.forEach(function(r){
+    if(movedI[r.i]) return;
+    if(companyKey(r._company || r.companyRaw) !== tk) return;
+    var n = toNum(r.id);
+    if(n===null || isNaN(n)) return;
+    used[n] = 1; if(n > max) max = n;
+  });
+  moved.sort(function(a,b){ return a.i - b.i; }).forEach(function(m){
+    var row = ROWS.find(function(x){ return x.i===m.i; });
+    var nr = NEWROWS.find(function(x){ return x.i===m.i; });
+    if(!row) return;
+    var n = max + 1;
+    while(used[n]) n++;
+    used[n] = 1; max = n;
+    row.id = n; if(nr) nr.id = n;
+    m.newId = n;
+  });
+  persistNew(); assignKeys(); applyEdits(); rebuild();
+  logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
+    fieldLabel:'Перенос заявок в ООО «Таком»',
+    before:moved.map(function(m){ return '№'+m.wasId+' ('+(m.wasC||'без подразделения')+')'; }).join(', '),
+    after:'ООО «Таком», номера '+moved.map(function(m){ return m.newId||m.wasId; }).join(', ')});
+  refreshFilterOptions(); renderAll(); renderHistory();
+  var m2 = document.getElementById('impMsg');
+  if(m2) m2.innerHTML = '<span style="color:var(--green)">Перенесено в ООО «Таком» заявок: '+
+    moved.length+'. Версия данных сохранена — откат доступен.</span>';
+}
 /* разовая перепривязка после массовой правки подразделений в Google Sheets */
 var RELINK_TAG = 'relink-2026-10-09';
 function forcedRelinkOnce(){
@@ -4144,6 +4221,7 @@ function startApp(user){
   /* номера добавленных вручную заявок — по порядку своего подразделения */
   setTimeout(function(){ try{ foldManualEditsOnce(); }catch(e){ console.error('fold', e); } }, 50000);
   setTimeout(function(){ try{ forcedRenumberOnce(); }catch(e){ console.error('renum', e); } }, 55000);
+  setTimeout(function(){ try{ moveTakomRowsOnce(); }catch(e){ console.error('takom', e); } }, 60000);
   /* сверка версии: сразу после входа, затем раз в 15 минут и при возврате на вкладку */
   setTimeout(checkForUpdate, 8000);
   setInterval(function(){ if(!document.hidden) checkForUpdate(); }, 900000);
