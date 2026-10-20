@@ -1737,7 +1737,8 @@ var COLS = [
   {f:'companyRaw',   t:'Подразделение'},
   {f:'open',         t:'Дата открытия',   type:'date'},
   {f:'close',        t:'Дата закрытия',   type:'date'},
-  {f:'days_close',   t:'Дней на закрытие',type:'num'},
+  /* срок считается по датам, руками не правится — иначе он расходится с датами */
+  {f:'days_close',   t:'Дней на закрытие',type:'num', ro:true},
   {f:'hires',        t:'Кол-во найма',    type:'num'},
   {f:'interviews',   t:'Кандидатов на собес.', type:'num'},
   {f:'closed_total', t:'Всего закрытых',  type:'num'},
@@ -1963,16 +1964,15 @@ function renderPivot(){
       var attrs = ' data-i="'+r.i+'" data-f="'+col.f+'"'+(col.type?' data-type="'+col.type+'"':'');
       var inner;
       /* срок закрытия считается по датам — вручную не правится */
-      if(col.f==='days_close' && !ro){
-        var cD2 = parseDate(r.close), oD2 = parseDate(r.open);
-        var hasClose2 = !!cD2 && cD2!==undefined, hasOpen2 = !!oD2 && oD2!==undefined;
-        var hint = r._daysManual ? 'Значение введено вручную. Очистите поле, чтобы вернуть автоматический расчёт'
-                 : hasClose2 ? 'Рассчитано: дата закрытия минус дата открытия. Можно исправить вручную'
-                 : hasOpen2  ? 'В поиске: сегодня минус дата открытия, обновляется каждый день. Можно исправить вручную'
-                 : 'Введите количество дней';
-        var mark = r._daysManual ? ' days-manual' : (hasOpen2 ? ' days-auto' : '');
-        inner = '<input class="cell cell-inp'+mark+'" type="number" min="0" step="1" inputmode="numeric"'+
-                ' title="'+hint+'"'+attrs+' value="'+(r._days_close==null?'':r._days_close)+'">';
+      if(col.f==='days_close'){
+        var cD3 = parseDate(r.close), oD3 = parseDate(r.open);
+        var hasClose3 = !!cD3 && cD3!==undefined, hasOpen3 = !!oD3 && oD3!==undefined;
+        var hint3 = hasClose3 ? 'Считается автоматически: дата закрытия минус дата открытия'
+                  : hasOpen3  ? 'В поиске: сегодня минус дата открытия, обновляется каждый день'
+                  : 'Будет рассчитан, когда проставят даты';
+        var mark3 = hasOpen3 ? ' days-auto' : '';
+        inner = '<span class="cell'+mark3+'" title="'+esc(hint3)+'"'+attrs+'>'+
+                (r._days_close==null?'':r._days_close)+'</span>';
       } else if(!ro && col.type==='num'){
         var nv = toNum(r[col.f]);
         inner = '<input class="cell cell-inp" type="number" min="0" step="1" inputmode="numeric"'+attrs+
@@ -2055,11 +2055,7 @@ function setCellValue(i, f, next){
 /* что именно предлагаем исправить одним нажатием */
 function quickFixes(r){
   var out = [];
-  if(r._errKeys.indexOf('days_mismatch')>=0){
-    var o = parseDate(r.open), c = parseDate(r.close);
-    if(o && c) out.push({key:'days_mismatch', f:'days_close', val:daysBetween(o,c),
-      label:'Поставить срок по датам: '+daysBetween(o,c)});
-  }
+  /* срок закрытия теперь считается по датам сам — исправлять его кнопкой незачем */
   if(r._errKeys.indexOf('open_has_date')>=0)
     out.push({key:'open_has_date', f:'status', val:STATUS_CLOSED, label:'Отметить вакансию закрытой'});
   if(r._errKeys.indexOf('no_left')>=0 && r._errKeys.indexOf('open_has_date')<0)
@@ -3013,7 +3009,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-20b';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-20c';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
@@ -3834,6 +3830,29 @@ function fixManualTeamOnce(){
       return '№'+x.id+' ('+(x.was||'пусто')+')'; }).join(', ')+(done.length>6?' …':'')});
   refreshFilterOptions(); renderAll(); renderHistory();
 }
+/* Срок закрытия стал считаться по датам. Ранее вписанные вручную значения
+   иначе остались бы замороженными: поле больше не правится, и снять их было бы нечем. */
+var DAYS_TAG = 'days-auto-2026-10-20';
+function dropDaysEditsOnce(){
+  if(!SESSION || !isAdmin()) return;
+  if(DB.get('daysauto','') === DAYS_TAG) return;
+  DB.set('daysauto', DAYS_TAG);
+  var keys = Object.keys(EDITS).filter(function(k){
+    return k.slice(-('§days_close'.length)) === '§days_close'; });
+  if(!keys.length) return;
+  var snaps = getSnaps();
+  snaps.unshift({name:'До перевода срока закрытия на расчёт по датам', user:SESSION.login,
+                 when:nowStr(), ts:new Date().toISOString(),
+                 edits:JSON.parse(JSON.stringify(EDITS)),
+                 newrows:JSON.parse(JSON.stringify(NEWROWS))});
+  saveSnaps(snaps.slice(0,30));
+  keys.forEach(function(k){ delete EDITS[k]; });
+  persistEdits(); assignKeys(); applyEdits(); rebuild();
+  logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
+    fieldLabel:'Срок закрытия переведён на расчёт по датам',
+    before:keys.length+' правок срока', after:'считается по датам открытия и закрытия'});
+  refreshFilterOptions(); renderAll(); renderHistory();
+}
 /* разовая перепривязка после массовой правки подразделений в Google Sheets */
 var RELINK_TAG = 'relink-2026-10-09';
 function forcedRelinkOnce(){
@@ -4277,6 +4296,7 @@ function startApp(user){
   setTimeout(function(){ try{ forcedRenumberOnce(); }catch(e){ console.error('renum', e); } }, 55000);
   setTimeout(function(){ try{ moveTakomRowsOnce(); }catch(e){ console.error('takom', e); } }, 60000);
   setTimeout(function(){ try{ fixManualTeamOnce(); }catch(e){ console.error('team', e); } }, 65000);
+  setTimeout(function(){ try{ dropDaysEditsOnce(); }catch(e){ console.error('daysauto', e); } }, 70000);
   /* сверка версии: сразу после входа, затем раз в 15 минут и при возврате на вкладку */
   setTimeout(checkForUpdate, 8000);
   setInterval(function(){ if(!document.hidden) checkForUpdate(); }, 900000);
