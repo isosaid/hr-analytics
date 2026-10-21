@@ -2485,8 +2485,11 @@ function sameMeaning(a, b, type){
   };
   return norm(A) === norm(B);
 }
-/* поля, где значение само по себе опознаёт заявку */
-var AUDIT_FIELDS = ['fio','pos','dept','note','open','close'];
+/* Поля, где значение само по себе опознаёт заявку. Дат здесь нет намеренно:
+   одна и та же дата закрытия законно стоит у десятков заявок, и совпадение
+   по ней ничего не доказывает — так возврат заявки № 484 сделал запись
+   в журнале, и две заявки «Джура-такси» с той же датой попали в подозреваемые. */
+var AUDIT_FIELDS = ['fio','pos','dept','note'];
 function plural(n, one, few, many){
   var a = Math.abs(n) % 100, b = a % 10;
   if(a > 10 && a < 20) return many;
@@ -2505,7 +2508,10 @@ function auditSuspicious(){
     var k = (h.k || '') + '§' + h.field;
     if(!logged[k]) logged[k] = h;                 /* журнал идёт от свежих к старым */
     /* то же значение, записанное когда-то в другую заявку: именно так выглядит
-       подмена — восстановление правок клало значение не в ту строку */
+       подмена — восстановление правок клало значение не в ту строку.
+       Записи, сделанные самим возвратом, пропускаем: иначе разбор
+       принимает за подмену собственную работу. */
+    if(h.auto) return;
     var vk = vkey(h.field, h.after);
     (byValue[vk] = byValue[vk] || []).push(h);
   });
@@ -2689,9 +2695,11 @@ function autoRepairMovedOnce(){
     var ek = editKey(j.row, j.f);
     if(!EDITS.hasOwnProperty(ek)) return;
     delete EDITS[ek]; markEditDeleted(ek); done++;
-    logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login,
+    var isDate = (COLS.find(function(c){ return c.f===j.f; })||{}).type==='date';
+    logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, auto:true,
       i:j.row.i, id:j.row.id, k:j.row._k, field:j.f, fieldLabel:j.t,
-      before:(j.cur==null?null:String(j.cur)), after:(j.was==null?null:String(j.was))});
+      before:(j.cur==null?null:(isDate?dateRu(j.cur):String(j.cur))),
+      after:(j.was==null?null:(isDate?dateRu(j.was):String(j.was)))});
   });
   if(!done) return;
   saveDelEdits();
@@ -2739,9 +2747,11 @@ function repairMovedValues(){
     var ek = editKey(j.row, j.f);
     if(!EDITS.hasOwnProperty(ek)) return;
     delete EDITS[ek]; markEditDeleted(ek); done++;
-    logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login,
+    var isDate = (COLS.find(function(c){ return c.f===j.f; })||{}).type==='date';
+    logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, auto:true,
       i:j.row.i, id:j.row.id, k:j.row._k, field:j.f, fieldLabel:j.t,
-      before:(j.cur==null?null:String(j.cur)), after:(j.was==null?null:String(j.was))});
+      before:(j.cur==null?null:(isDate?dateRu(j.cur):String(j.cur))),
+      after:(j.was==null?null:(isDate?dateRu(j.was):String(j.was)))});
   });
   saveDelEdits();
   persistEdits(); assignKeys(); applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
@@ -3487,7 +3497,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-21p';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-21q';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
