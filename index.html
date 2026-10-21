@@ -2654,8 +2654,11 @@ var MOVED_TAG = 'moved-back-2026-10-21';
 function autoRepairMovedOnce(){
   if(!SESSION || !isAdmin()) return;
   if(DB.get('movedback','') === MOVED_TAG) return;
-  DB.set('movedback', MOVED_TAG);
+  /* Правки могли ещё не приехать из базы. Если их нет вовсе, отметку не ставим,
+     иначе возврат «сгорит» вхолостую и больше не повторится. */
+  if(!Object.keys(EDITS).length) return;
   var r = movedRepairJobs();
+  DB.set('movedback', MOVED_TAG);
   if(!r.jobs.length) return;
   var snaps = getSnaps();
   snaps.unshift({name:'До возврата перезаписанных заявок', user:SESSION.login, when:nowStr(),
@@ -3232,6 +3235,8 @@ function cloudPull(pathIdx){
           dropBlankNewRows();
           assignKeys(); applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
           try{ maybeAutoRestore(); }catch(e2){ console.error('autofix', e2); }
+          /* правки только что приехали из базы — самое время вернуть перезаписанные заявки */
+          try{ autoRepairMovedOnce(); }catch(e3){ console.error('movedback', e3); }
         }catch(err){ console.error('merge', err); }
       }
       CLOUD.lastPull = Date.now(); CLOUD.fails = 0;
@@ -3445,7 +3450,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-21n';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-21o';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
@@ -4788,7 +4793,9 @@ function startApp(user){
   setTimeout(function(){ try{ fixManualTeamOnce(); }catch(e){ console.error('team', e); } }, 65000);
   setTimeout(function(){ try{ dropDaysEditsOnce(); }catch(e){ console.error('daysauto', e); } }, 70000);
   setTimeout(function(){ try{ clearWrongFioOnce(); }catch(e){ console.error('fiofix', e); } }, 75000);
-  setTimeout(function(){ try{ autoRepairMovedOnce(); }catch(e){ console.error('movedback', e); } }, 80000);
+  /* возврат перезаписанных заявок нужен сразу, а не в конце очереди миграций */
+  setTimeout(function(){ try{ autoRepairMovedOnce(); }catch(e){ console.error('movedback', e); } }, 12000);
+  setTimeout(function(){ try{ autoRepairMovedOnce(); }catch(e){ console.error('movedback', e); } }, 45000);
   /* сверка версии: сразу после входа, затем раз в 15 минут и при возврате на вкладку */
   setTimeout(checkForUpdate, 8000);
   setInterval(function(){ if(!document.hidden) checkForUpdate(); }, 900000);
