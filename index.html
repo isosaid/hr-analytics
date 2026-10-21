@@ -1091,7 +1091,12 @@ var RULES = [
    test:function(r){ return r.status===STATUS_OPEN && !!r.close; }, msg:'Статус «открыта», но заполнена дата закрытия — противоречие'},
   {key:'close_lt_open',  field:'close',     label:'Дата закрытия раньше открытия',
    test:function(r){ var o=parseDate(r.open), c=parseDate(r.close);
-     return o && c && c<o; }, msg:'Дата закрытия раньше даты открытия'},
+     return o && c && c<o; },
+   msg:function(r){
+     return 'Вакансия открыта ' + dateRu(r.open) + ', а закрыта ' + dateRu(r.close) +
+            ' — на ' + Math.abs(daysBetween(parseDate(r.open), parseDate(r.close))) +
+            ' дн. раньше. Похоже, даты поменяли местами; пока они такие, срок закрытия не считается.';
+   }},
   {key:'future_date',    field:'close',     label:'Дата в будущем',
    test:function(r){ var c=parseDate(r.close); return !!c && c>REF_DATE; },
    msg:'Дата закрытия позже сегодняшнего дня — вакансия не может быть закрыта будущим числом'},
@@ -1110,7 +1115,12 @@ var RULES = [
             'В дашборде показан расчёт по датам; если верен срок, поправьте даты в Google Sheets, если верны даты — поправьте там число.';
    }},
   {key:'days_neg',       field:'days_close',label:'Отрицательное число дней',
-   test:function(r){ var d=toNum(r.days_close); return d!==null && !isNaN(d) && d<0; },
+   /* если даты перепутаны местами, про это уже говорит «Дата закрытия раньше
+      открытия» — не показываем то же самое вторым замечанием */
+   test:function(r){
+     var o=parseDate(r.open), c=parseDate(r.close);
+     if(o && c && o!==undefined && c!==undefined && c<o) return false;
+     var d=toNum(r.days_close); return d!==null && !isNaN(d) && d<0; },
    msg:'Количество дней на закрытие не может быть отрицательным'},
   {key:'days_empty',     field:'days_close',label:'Не заполнены дни на закрытие',
    /* срок считается по датам, поэтому смотрим на то, что показано в ячейке,
@@ -1349,6 +1359,9 @@ function derive(r, manualDays){
   d.daysManual = !!manualDays && dc!==null && !isNaN(dc) && dc>=0;
   if(d.daysManual)         d.days_close = dc;                                  /* вписано вручную */
   else if(oOk && cOk && c>=o) d.days_close = daysBetween(o, c);
+  /* даты перепутаны местами — показываем отрицательный срок, а не пустую ячейку:
+     иначе непонятно, почему заявка помечена ошибкой, а в колонке ничего нет */
+  else if(oOk && cOk)      d.days_close = daysBetween(o, c);
   else if(oOk && !cOk)     d.days_close = Math.max(0, daysBetween(o, REF_DATE));
   else                     d.days_close = (dc!==null && !isNaN(dc) && dc>=0) ? dc : null;
   /* для средних сроков берём только вакансии с настоящей датой закрытия */
@@ -3078,7 +3091,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-21a';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-21b';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
