@@ -419,6 +419,7 @@
           <label class="toggle"><input type="checkbox" id="onlyErrors"> Только строки с ошибками</label>
           <button class="btn" id="undoBtn" disabled>↶ Отменить все правки</button>
           <button class="btn" id="resetViewBtn">↺ Вернуть видимые строки к данным таблицы</button>
+          <button class="btn" id="auditBtn" title="Показать, откуда взялись подозрительные значения. Данные не меняются.">🔍 Разбор подозрительных правок</button>
           <button class="btn primary" id="addRowBtn">+ Добавить позицию</button>
           <button class="btn primary" id="exportBtn">↓ Выгрузить в CSV (<span id="exportCount">0</span>)</button>
         </div>
@@ -431,6 +432,8 @@
           <span>Ошибочных ячеек: <b style="color:var(--red)" id="pivotBadCells">0</b> в <b style="color:var(--red)" id="pivotBadRows">0</b> строках</span>
           <span>Внесено правок: <b class="save-note" id="pivotEdits">0</b></span>
         </div>
+        <div id="auditBox" style="display:none;margin-bottom:12px;padding:12px 14px;border:1.5px solid var(--line);
+             border-radius:10px;background:var(--amber-soft)"></div>
         <div class="grid-wrap"><table class="grid-tbl">
           <thead><tr id="pivotHead"></tr></thead>
           <tbody id="pivotBody"></tbody>
@@ -2383,6 +2386,102 @@ document.addEventListener('click', function(e){
   }
 }, true);
 
+/* ---- разбор подозрительных значений ----
+   Показывает, откуда взялось значение: записал его человек (тогда в журнале есть
+   запись с автором и прежним значением) или оно появилось само — при восстановлении
+   правок из журнала, которое до 20.10.2026 умело класть значение не в ту заявку.
+   Ничего не меняет. */
+function auditSuspicious(){
+  var logged = {};
+  getHist().forEach(function(h){
+    if(!h || h.bulk || !h.field || h.field==='__row') return;
+    var k = (h.k || '') + '§' + h.field;
+    if(!logged[k]) logged[k] = h;                 /* журнал идёт от свежих к старым */
+  });
+  var out = [];
+  scopedRows().forEach(function(r){
+    var o = parseDate(r.open), c = parseDate(r.close);
+    var datesBad = !!(o && c && o!==undefined && c!==undefined && c < o);
+    var src = isNewRow(r.i) ? null : (RAW.filter(function(x){ return x.i===r.i; })[0] || {});
+    var items = [], noRec = 0;
+    COLS.forEach(function(col){
+      var ek = editKey(r, col.f);
+      var interesting = EDITS.hasOwnProperty(ek) ||
+                        (datesBad && (col.f==='open' || col.f==='close'));
+      if(!interesting) return;
+      var rec = logged[ek];
+      var cur = r[col.f];
+      var was = src ? src[col.f] : null;
+      if(!rec && EDITS.hasOwnProperty(ek)) noRec++;
+      items.push({f:col.f, t:col.t, type:col.type, cur:cur, was:was, rec:rec,
+                  fromEdit:EDITS.hasOwnProperty(ek)});
+    });
+    if(!datesBad && !noRec) return;
+    out.push({row:r, datesBad:datesBad, noRec:noRec, items:items});
+  });
+  return out;
+}
+function renderAudit(){
+  var box = document.getElementById('auditBox');
+  if(!box) return;
+  var list = auditSuspicious();
+  var val = function(v, type){
+    if(v===null || v===undefined || String(v)==='') return '<i style="color:var(--muted)">пусто</i>';
+    return esc(type==='date' ? dateRu(v) : String(v));
+  };
+  var html = '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">'+
+    '<b>Разбор подозрительных правок</b>'+
+    '<button class="btn" id="auditClose" style="padding:3px 10px;font-size:12px">Закрыть</button></div>';
+  if(!list.length){
+    html += '<div style="margin-top:8px;font-size:13px">Подозрительных значений не нашлось: '+
+      'везде, где значение отличается от таблицы, в журнале есть запись с автором.</div>';
+    box.innerHTML = html; box.style.display='';
+    document.getElementById('auditClose').onclick = function(){ box.style.display='none'; };
+    return;
+  }
+  var totalNoRec = list.reduce(function(a,x){ return a + x.noRec; }, 0);
+  /* строки, где дат никто не правил — значит так стоит в самой таблице */
+  var fromSheet = list.filter(function(x){
+    return x.datesBad && !x.noRec && !x.items.some(function(it){ return it.fromEdit; }) && !isNewRow(x.row.i);
+  }).length;
+  html += '<div style="margin-top:6px;font-size:13px">Заявок к проверке: <b>'+list.length+'</b>.<br>'+
+    '· значений, которых <b>нет в журнале</b> — их не вносил человек, значение появилось само: <b>'+totalNoRec+'</b>;<br>'+
+    '· заявок, где <b>даты так и стоят в Google Sheets</b> — править нужно в таблице: <b>'+fromSheet+'</b>.</div>'+
+    '<div style="margin-top:4px;font-size:12px;color:var(--muted)">Журнал хранит ограниченное число записей, '+
+    'поэтому у давних правок записи может не быть по другой причине — из-за вытеснения. '+
+    'Данные этот разбор не меняет.</div>';
+  html += '<div class="grid-wrap" style="margin-top:10px;max-height:420px;overflow:auto">'+
+    '<table class="dt"><thead><tr><th>№</th><th>Подразделение</th><th>Позиция</th><th>Поле</th>'+
+    '<th>Сейчас</th><th>В Google Sheets</th><th>Кто записал</th></tr></thead><tbody>';
+  list.slice(0, 200).forEach(function(x){
+    var r = x.row, first = true;
+    (x.items.length ? x.items : [{t:'—', cur:null, was:null, rec:null}]).forEach(function(it){
+      html += '<tr>'+
+        '<td>'+(first ? esc(String(r.id==null?'':r.id)) + (isNewRow(r.i)?' <span class="pill amber" style="font-size:9px;padding:1px 4px">не в таблице</span>':'') : '')+'</td>'+
+        '<td>'+(first ? esc(String(r._company||'')) : '')+'</td>'+
+        '<td>'+(first ? esc(String(r.pos||'').slice(0,40)) : '')+'</td>'+
+        '<td>'+esc(it.t)+'</td>'+
+        '<td>'+val(it.cur, it.type)+'</td>'+
+        '<td>'+(isNewRow(r.i) ? '<i style="color:var(--muted)">строки нет в таблице</i>' : val(it.was, it.type))+'</td>'+
+        '<td>'+(it.rec
+          ? esc(String(it.rec.user||'—')) + ' <span style="color:var(--muted)">'+esc(String(it.rec.when||''))+'</span>'
+          : (it.fromEdit ? '<b style="color:var(--red)">записи в журнале нет</b>'
+                         : '<i style="color:var(--muted)">правки не было</i>'))+'</td>'+
+        '</tr>';
+      first = false;
+    });
+  });
+  html += '</tbody></table></div>';
+  if(list.length > 200) html += '<div style="font-size:12px;color:var(--muted);margin-top:6px">Показаны первые 200 заявок из '+list.length+'.</div>';
+  box.innerHTML = html; box.style.display='';
+  document.getElementById('auditClose').onclick = function(){ box.style.display='none'; };
+}
+document.getElementById('auditBtn').addEventListener('click', function(){
+  var box = document.getElementById('auditBox');
+  if(box && box.style.display!=='none' && box.innerHTML){ box.style.display='none'; return; }
+  renderAudit();
+});
+
 document.getElementById('undoBtn').addEventListener('click', function(){
   if(!canManageData()){ alert('Массовая отмена правок доступна сотрудникам Авесто и администратору.'); return; }
   if(!confirm('Отменить все внесённые правки и вернуть исходные значения из файла?')) return;
@@ -3091,7 +3190,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-21b';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-21c';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
