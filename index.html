@@ -2391,6 +2391,27 @@ document.addEventListener('click', function(e){
    запись с автором и прежним значением) или оно появилось само — при восстановлении
    правок из журнала, которое до 20.10.2026 умело класть значение не в ту заявку.
    Ничего не меняет. */
+/* Значение считается изменённым только если оно отличается по смыслу.
+   Иначе в разбор попадали тысячи правок вроде «ООО 'Авесто Групп'» → «ООО "Авесто Групп"»,
+   где поменялись только кавычки, и за ними не было видно настоящих подмен. */
+function sameMeaning(a, b, type){
+  var A = (a===null||a===undefined) ? '' : a, B = (b===null||b===undefined) ? '' : b;
+  if(type==='date'){
+    var da = parseDate(A), db = parseDate(B);
+    if(da && db && da!==undefined && db!==undefined) return da.getTime()===db.getTime();
+    return String(A).trim() === String(B).trim();
+  }
+  if(type==='num'){
+    var na = toNum(A), nb = toNum(B);
+    if(na===null && nb===null) return true;
+    if(na===null || nb===null) return false;
+    return !isNaN(na) && !isNaN(nb) && na===nb;
+  }
+  var norm = function(x){
+    return String(x).replace(/[«»""„“”'`]/g,'"').replace(/\s+/g,' ').trim().toLowerCase();
+  };
+  return norm(A) === norm(B);
+}
 function auditSuspicious(){
   var logged = {};
   getHist().forEach(function(h){
@@ -2406,15 +2427,16 @@ function auditSuspicious(){
     var items = [], noRec = 0;
     COLS.forEach(function(col){
       var ek = editKey(r, col.f);
-      var interesting = EDITS.hasOwnProperty(ek) ||
-                        (datesBad && (col.f==='open' || col.f==='close'));
-      if(!interesting) return;
-      var rec = logged[ek];
       var cur = r[col.f];
       var was = src ? src[col.f] : null;
-      if(!rec && EDITS.hasOwnProperty(ek)) noRec++;
+      /* правка, которая ничего не изменила по смыслу, разбору не интересна */
+      var changed = EDITS.hasOwnProperty(ek) && !!src && !sameMeaning(cur, was, col.type);
+      var interesting = changed || (datesBad && (col.f==='open' || col.f==='close'));
+      if(!interesting) return;
+      var rec = logged[ek];
+      if(!rec && changed) noRec++;
       items.push({f:col.f, t:col.t, type:col.type, cur:cur, was:was, rec:rec,
-                  fromEdit:EDITS.hasOwnProperty(ek)});
+                  fromEdit:changed});
     });
     if(!datesBad && !noRec) return;
     out.push({row:r, datesBad:datesBad, noRec:noRec, items:items});
@@ -3190,7 +3212,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-21c';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-21d';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
