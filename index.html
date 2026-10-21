@@ -3288,7 +3288,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-21f';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-21g';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
@@ -4141,6 +4141,51 @@ function dropDaysEditsOnce(){
     before:keys.length+' правок срока', after:'считается по датам открытия и закрытия'});
   refreshFilterOptions(); renderAll(); renderHistory();
 }
+/* Разовая очистка чужого ФИО в заявке «Помощница директора» (ООО «Мармари»).
+   Тот же сотрудник числился пастухом в заявке № 126, обе закрыты одним днём;
+   кадры подтвердили, что Искандаров Зоҳир — пастух. Здесь ФИО чужое.
+   Ищем по подразделению, должности и самому ФИО, а не по номеру заявки:
+   номер у добавленных вручную строк мог смениться при перенумерации. */
+var FIO_TAG = 'fio-marmari-2026-10-21';
+function clearWrongFioOnce(){
+  if(!SESSION || !isAdmin()) return;
+  if(DB.get('fiofix','') === FIO_TAG) return;
+  DB.set('fiofix', FIO_TAG);
+  if(!NEWROWS.length) return;
+  var want = 'искандаров зоҳир';
+  var norm = function(v){ return String(v==null?'':v).replace(/\s+/g,' ').trim().toLowerCase(); };
+  var targets = ROWS.filter(function(r){
+    return isNewRow(r.i) &&
+           companyKey(r._company || r.companyRaw) === companyKey('ООО "Мармари"') &&
+           norm(r.pos).indexOf('помощница директора') >= 0 &&
+           fioKey(r.fio) === fioKey(want);
+  });
+  if(!targets.length) return;
+  var snaps = getSnaps();
+  snaps.unshift({name:'До очистки чужого ФИО в заявке «Помощница директора»', user:SESSION.login,
+                 when:nowStr(), ts:new Date().toISOString(),
+                 edits:JSON.parse(JSON.stringify(EDITS)),
+                 newrows:JSON.parse(JSON.stringify(NEWROWS))});
+  saveSnaps(snaps.slice(0,30));
+  var done = [];
+  targets.forEach(function(r){
+    var nr = NEWROWS.find(function(x){ return x.i===r.i; });
+    if(!nr) return;
+    done.push({id:r.id, was:r.fio});
+    r.fio = null; nr.fio = null;
+    var ek = editKey(r, 'fio');
+    if(EDITS.hasOwnProperty(ek)) delete EDITS[ek];
+    logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login,
+      i:r.i, id:r.id, k:r._k, field:'fio', fieldLabel:'ФИО сотрудника',
+      before:String(done[done.length-1].was), after:null});
+  });
+  if(!done.length) return;
+  persistNew(); persistEdits(); assignKeys(); applyEdits(); rebuild();
+  refreshFilterOptions(); renderAll(); renderHistory();
+  var m = document.getElementById('impMsg');
+  if(m) m.innerHTML = '<span style="color:var(--green)">Чужое ФИО убрано из заявки «Помощница директора». '+
+    'Версия данных сохранена — откат доступен.</span>';
+}
 /* разовая перепривязка после массовой правки подразделений в Google Sheets */
 var RELINK_TAG = 'relink-2026-10-09';
 function forcedRelinkOnce(){
@@ -4585,6 +4630,7 @@ function startApp(user){
   setTimeout(function(){ try{ moveTakomRowsOnce(); }catch(e){ console.error('takom', e); } }, 60000);
   setTimeout(function(){ try{ fixManualTeamOnce(); }catch(e){ console.error('team', e); } }, 65000);
   setTimeout(function(){ try{ dropDaysEditsOnce(); }catch(e){ console.error('daysauto', e); } }, 70000);
+  setTimeout(function(){ try{ clearWrongFioOnce(); }catch(e){ console.error('fiofix', e); } }, 75000);
   /* сверка версии: сразу после входа, затем раз в 15 минут и при возврате на вкладку */
   setTimeout(checkForUpdate, 8000);
   setInterval(function(){ if(!document.hidden) checkForUpdate(); }, 900000);
