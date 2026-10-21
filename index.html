@@ -2413,18 +2413,26 @@ function sameMeaning(a, b, type){
   return norm(A) === norm(B);
 }
 function auditSuspicious(){
-  var logged = {};
+  var logged = {}, byValue = {};
+  var vkey = function(field, v){
+    return field + '§' + String(v===null||v===undefined?'':v)
+      .replace(/[«»""„“”'`]/g,'"').replace(/\s+/g,' ').trim().toLowerCase();
+  };
   getHist().forEach(function(h){
     if(!h || h.bulk || !h.field || h.field==='__row') return;
     var k = (h.k || '') + '§' + h.field;
     if(!logged[k]) logged[k] = h;                 /* журнал идёт от свежих к старым */
+    /* то же значение, записанное когда-то в другую заявку: именно так выглядит
+       подмена — восстановление правок клало значение не в ту строку */
+    var vk = vkey(h.field, h.after);
+    (byValue[vk] = byValue[vk] || []).push(h);
   });
-  var out = [];
+  var out = [], quiet = 0;
   scopedRows().forEach(function(r){
     var o = parseDate(r.open), c = parseDate(r.close);
     var datesBad = !!(o && c && o!==undefined && c!==undefined && c < o);
     var src = isNewRow(r.i) ? null : (RAW.filter(function(x){ return x.i===r.i; })[0] || {});
-    var items = [], noRec = 0;
+    var items = [], noRec = 0, moved = 0;
     COLS.forEach(function(col){
       var ek = editKey(r, col.f);
       var cur = r[col.f];
@@ -2434,19 +2442,30 @@ function auditSuspicious(){
       var interesting = changed || (datesBad && (col.f==='open' || col.f==='close'));
       if(!interesting) return;
       var rec = logged[ek];
+      /* то же значение записывали в другую заявку — похоже, оно оттуда и переехало */
+      var from = null;
+      if(changed && !rec){
+        var same = byValue[vkey(col.f, cur)] || [];
+        for(var si=0; si<same.length; si++){
+          if(same[si].k && same[si].k !== r._k){ from = same[si]; break; }
+        }
+      }
       if(!rec && changed) noRec++;
+      if(from) moved++;
       items.push({f:col.f, t:col.t, type:col.type, cur:cur, was:was, rec:rec,
-                  fromEdit:changed});
+                  fromEdit:changed, from:from});
     });
-    if(!datesBad && !noRec) return;
-    out.push({row:r, datesBad:datesBad, noRec:noRec, items:items});
+    quiet += (noRec - moved);              /* правки без записи и без следа в журнале */
+    if(!datesBad && !moved) return;        /* остальное — просто давние правки */
+    out.push({row:r, datesBad:datesBad, noRec:noRec, moved:moved, items:items});
   });
-  return out;
+  return {list:out, quiet:quiet};
 }
 function renderAudit(){
   var box = document.getElementById('auditBox');
   if(!box) return;
-  var list = auditSuspicious();
+  var res = auditSuspicious();
+  var list = res.list, quiet = res.quiet;
   var val = function(v, type){
     if(v===null || v===undefined || String(v)==='') return '<i style="color:var(--muted)">пусто</i>';
     return esc(type==='date' ? dateRu(v) : String(v));
@@ -2461,17 +2480,17 @@ function renderAudit(){
     document.getElementById('auditClose').onclick = function(){ box.style.display='none'; };
     return;
   }
-  var totalNoRec = list.reduce(function(a,x){ return a + x.noRec; }, 0);
+  var totalMoved = list.reduce(function(a,x){ return a + x.moved; }, 0);
   /* строки, где дат никто не правил — значит так стоит в самой таблице */
   var fromSheet = list.filter(function(x){
     return x.datesBad && !x.noRec && !x.items.some(function(it){ return it.fromEdit; }) && !isNewRow(x.row.i);
   }).length;
   html += '<div style="margin-top:6px;font-size:13px">Заявок к проверке: <b>'+list.length+'</b>.<br>'+
-    '· значений, которых <b>нет в журнале</b> — их не вносил человек, значение появилось само: <b>'+totalNoRec+'</b>;<br>'+
+    '· значений, <b>переехавших из другой заявки</b> — то же значение журнал помнит за другим номером: <b>'+totalMoved+'</b>;<br>'+
     '· заявок, где <b>даты так и стоят в Google Sheets</b> — править нужно в таблице: <b>'+fromSheet+'</b>.</div>'+
-    '<div style="margin-top:4px;font-size:12px;color:var(--muted)">Журнал хранит ограниченное число записей, '+
-    'поэтому у давних правок записи может не быть по другой причине — из-за вытеснения. '+
-    'Данные этот разбор не меняет.</div>';
+    '<div style="margin-top:4px;font-size:12px;color:var(--muted)">Ещё <b>'+quiet+'</b> правок сделаны без записи в журнале, '+
+    'но следов переноса у них нет — скорее всего это давние правки, чьи записи журнал уже вытеснил. '+
+    'Сюда они не попали. Данные этот разбор не меняет.</div>';
   html += '<div class="grid-wrap" style="margin-top:10px;max-height:420px;overflow:auto">'+
     '<table class="dt"><thead><tr><th>№</th><th>Подразделение</th><th>Позиция</th><th>Поле</th>'+
     '<th>Сейчас</th><th>В Google Sheets</th><th>Кто записал</th></tr></thead><tbody>';
@@ -2487,8 +2506,11 @@ function renderAudit(){
         '<td>'+(isNewRow(r.i) ? '<i style="color:var(--muted)">строки нет в таблице</i>' : val(it.was, it.type))+'</td>'+
         '<td>'+(it.rec
           ? esc(String(it.rec.user||'—')) + ' <span style="color:var(--muted)">'+esc(String(it.rec.when||''))+'</span>'
-          : (it.fromEdit ? '<b style="color:var(--red)">записи в журнале нет</b>'
-                         : '<i style="color:var(--muted)">правки не было</i>'))+'</td>'+
+          : (it.from
+             ? '<b style="color:var(--red)">переехало из заявки № '+esc(String(it.from.id==null?'?':it.from.id))+'</b>'+
+               ' <span style="color:var(--muted)">'+esc(String(it.from.when||''))+'</span>'
+             : (it.fromEdit ? '<span style="color:var(--muted)">записи нет (давняя правка)</span>'
+                            : '<i style="color:var(--muted)">правки не было</i>')))+'</td>'+
         '</tr>';
       first = false;
     });
@@ -3212,7 +3234,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-21d';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-21e';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
