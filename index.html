@@ -2539,9 +2539,13 @@ function renderAudit(){
     if(v===null || v===undefined || String(v)==='') return '<i style="color:var(--muted)">пусто</i>';
     return esc(type==='date' ? dateRu(v) : String(v));
   };
+  var movedCount = list.reduce(function(a,x){ return a + x.moved; }, 0);
   var html = '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">'+
-    '<b>Разбор подозрительных правок</b>'+
-    '<button class="btn" id="auditClose" style="padding:3px 10px;font-size:12px">Закрыть</button></div>';
+    '<b>Разбор подозрительных правок</b><span>'+
+    (movedCount && canManageData()
+      ? '<button class="btn" id="auditFix" style="padding:3px 10px;font-size:12px;margin-right:8px">'+
+        '↺ Вернуть переехавшие значения ('+movedCount+')</button>' : '')+
+    '<button class="btn" id="auditClose" style="padding:3px 10px;font-size:12px">Закрыть</button></span></div>';
   if(!list.length){
     html += '<div style="margin-top:8px;font-size:13px">Подозрительных значений не нашлось: '+
       'везде, где значение отличается от таблицы, в журнале есть запись с автором.</div>';
@@ -2588,6 +2592,46 @@ function renderAudit(){
   if(list.length > 200) html += '<div style="font-size:12px;color:var(--muted);margin-top:6px">Показаны первые 200 заявок из '+list.length+'.</div>';
   box.innerHTML = html; box.style.display='';
   document.getElementById('auditClose').onclick = function(){ box.style.display='none'; };
+  var fixBtn = document.getElementById('auditFix');
+  if(fixBtn) fixBtn.onclick = repairMovedValues;
+}
+/* Снять правки, которые опознаны как переехавшие из другой заявки.
+   Все они сделаны поверх строк из Google Sheets, поэтому снятие правки
+   возвращает значение таблицы — то же самое делает кнопка «Как в Google Sheets». */
+function repairMovedValues(){
+  if(!canManageData()){ alert('Доступно сотрудникам Авесто и администратору.'); return; }
+  var res = auditSuspicious();
+  var jobs = [];
+  res.list.forEach(function(x){
+    x.items.forEach(function(it){
+      if(it.from) jobs.push({row:x.row, f:it.f, t:it.t, cur:it.cur, was:it.was, from:it.from});
+    });
+  });
+  if(!jobs.length){ alert('Переехавших значений не найдено.'); return; }
+  if(!confirm('Вернуть '+jobs.length+' значени'+(jobs.length===1?'е':'й')+
+      ' к данным Google Sheets?\n\nЭто значения, которые журнал помнит за другими заявками. '+
+      'Версия данных сохранится — вернуться можно.')) return;
+  var snaps = getSnaps();
+  snaps.unshift({name:'До возврата переехавших значений', user:SESSION.login, when:nowStr(),
+                 ts:new Date().toISOString(), edits:JSON.parse(JSON.stringify(EDITS)),
+                 newrows:JSON.parse(JSON.stringify(NEWROWS))});
+  saveSnaps(snaps.slice(0,30));
+  var done = 0;
+  jobs.forEach(function(j){
+    var ek = editKey(j.row, j.f);
+    if(!EDITS.hasOwnProperty(ek)) return;
+    delete EDITS[ek]; done++;
+    logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login,
+      i:j.row.i, id:j.row.id, k:j.row._k, field:j.f, fieldLabel:j.t,
+      before:(j.cur==null?null:String(j.cur)), after:(j.was==null?null:String(j.was))});
+  });
+  persistEdits(); assignKeys(); applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
+  logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
+    fieldLabel:'Возврат переехавших значений',
+    before:done+' значений', after:'данные из Google Sheets'});
+  renderHistory();
+  renderAudit();
+  alert('Возвращено значений: '+done+'. Версия данных сохранена — откат доступен в «Истории».');
 }
 document.getElementById('auditBtn').addEventListener('click', function(){
   var box = document.getElementById('auditBox');
@@ -3303,7 +3347,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-21h';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-21i';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
