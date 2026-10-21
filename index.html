@@ -1163,7 +1163,20 @@ var RULES = [
   {key:'not_number',     field:'__num',     label:'Нечисловое значение в числовом поле',
    test:function(r){ return ['days_close','hires','interviews','closed_total'].some(function(f){
      var v=toNum(r[f]); return v!==null && isNaN(v); }); },
-   msg:'В числовом поле указано не число'}
+   msg:'В числовом поле указано не число'},
+  {key:'fio_twin',       field:'fio',       label:'Один сотрудник на разных позициях',
+   test:function(r){ return fioTwins(r).length>0; },
+   msg:function(r){
+     var t = fioTwins(r);
+     if(!t.length) return '';
+     var names = t.slice(0,3).map(function(x){
+       return '№' + (x.id==null?'?':x.id) + ' «' + String(x.pos||'').slice(0,40) + '»' +
+              (x._company && x._company!==r._company ? ' (' + x._company + ')' : '');
+     }).join(', ');
+     return 'Тот же сотрудник указан в заявке ' + names +
+            (t.length>3 ? ' и ещё в ' + (t.length-3) : '') +
+            '. Проверьте, не попало ли ФИО не в ту заявку.';
+   }}
 ];
 
 /* validate one row -> {cellErrors:{field:[msg]}, keys:[ruleKey]} */
@@ -1382,9 +1395,50 @@ function derive(r, manualDays){
   if(!d.openActive) d.days_open_now = null;
   return d;
 }
+/* Один и тот же сотрудник на разных заявках — так выглядит ФИО, попавшее не в свою
+   строку: «Искандаров Зоҳир» одновременно пастух и помощница директора.
+   Индекс строим один раз за перерасчёт, иначе проверка пошла бы по всем строкам у каждой. */
+var FIO_INDEX = {};
+function fioKey(v){
+  return String(v==null?'':v).replace(/\s+/g,' ').trim().toLowerCase();
+}
+function buildFioIndex(){
+  FIO_INDEX = {};
+  ROWS.forEach(function(r){
+    var k = fioKey(r.fio);
+    if(!k || k.length < 5) return;                 /* пометки вроде «нет» не считаем */
+    (FIO_INDEX[k] = FIO_INDEX[k] || []).push(r);
+  });
+}
+/* Человека вполне могли нанять дважды: стажёром, потом специалистом — это норма.
+   Невозможно другое: приём на две разные должности в одни и те же дни.
+   Поэтому сверяем сроки: считаем подозрительным только близкие по времени заявки. */
+var TWIN_DAYS = 14;
+function twinWhen(r){
+  var c = parseDate(r.close); if(c && c!==undefined) return c;
+  var o = parseDate(r.open);  if(o && o!==undefined) return o;
+  return null;
+}
+function fioTwins(r){
+  var k = fioKey(r.fio);
+  if(!k) return [];
+  var list = FIO_INDEX[k] || [];
+  if(list.length < 2) return [];
+  var pos = String(r.pos||'').trim().toLowerCase();
+  var when = twinWhen(r);
+  if(!when) return [];
+  return list.filter(function(x){
+    if(x.i === r.i) return false;
+    if(String(x.pos||'').trim().toLowerCase() === pos) return false;
+    var w = twinWhen(x);
+    if(!w) return false;
+    return Math.abs(daysBetween(when, w)) <= TWIN_DAYS;
+  });
+}
 function rebuild(){
   ROWIDX = null; CID_CACHE = null; SCOPE_CACHE = null;   /* данные изменились — кэши сбрасываем */
   buildCompanyRegistry(ROWS);
+  buildFioIndex();
   ROWS.forEach(function(r){
     var manual = EDITS.hasOwnProperty(editKey(r,'days_close')) ||
                  (isNewRow(r.i) && r.days_close!==null && r.days_close!==undefined && String(r.days_close)!=='');
@@ -3234,7 +3288,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-21e';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-21f';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
