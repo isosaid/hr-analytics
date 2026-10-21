@@ -1095,11 +1095,20 @@ var RULES = [
   {key:'future_date',    field:'close',     label:'Дата в будущем',
    test:function(r){ var c=parseDate(r.close); return !!c && c>REF_DATE; },
    msg:'Дата закрытия позже сегодняшнего дня — вакансия не может быть закрыта будущим числом'},
-  {key:'days_mismatch',  field:'days_close',label:'Расхождение в исходных данных',
+  {key:'days_mismatch',  field:'days_close',label:'Срок в Google Sheets не сходится с датами',
    test:function(r){ var o=parseDate(r.open), c=parseDate(r.close), d=toNum(r.days_close);
      if(!o||!c||o===undefined||c===undefined||d===null||isNaN(d)) return false;
      return Math.abs(d - daysBetween(o,c))>1; },
-   msg:'В таблице проставлен срок, не совпадающий с датами. В дашборде показан расчёт по датам — поправьте значение в Google Sheets'},
+   /* называем оба числа: в ячейке теперь расчёт по датам, и без этого
+      непонятно, с чем именно не сходится срок */
+   msg:function(r){
+     var o=parseDate(r.open), c=parseDate(r.close), d=toNum(r.days_close);
+     if(!o||!c||d===null||isNaN(d)) return '';
+     var calc = daysBetween(o,c);
+     return 'В Google Sheets срок закрытия ' + d + ' дн., а по датам ' + dateRu(r.open) +
+            ' — ' + dateRu(r.close) + ' получается ' + calc + ' дн. ' +
+            'В дашборде показан расчёт по датам; если верен срок, поправьте даты в Google Sheets, если верны даты — поправьте там число.';
+   }},
   {key:'days_neg',       field:'days_close',label:'Отрицательное число дней',
    test:function(r){ var d=toNum(r.days_close); return d!==null && !isNaN(d) && d<0; },
    msg:'Количество дней на закрытие не может быть отрицательным'},
@@ -1152,11 +1161,16 @@ function validateRow(r){
     try { bad = rule.test(r); } catch(e){ bad=false; }
     if(!bad) return;
     keys.push(rule.key);
+    /* текст замечания может зависеть от строки — чтобы называть конкретные числа */
+    var msg;
+    try { msg = (typeof rule.msg === 'function') ? rule.msg(r) : rule.msg; }
+    catch(e){ msg = ''; }
+    if(!msg) return;
     if(rule.field==='__num'){
       ['days_close','hires','interviews','closed_total'].forEach(function(f){
-        var v=toNum(r[f]); if(v!==null && isNaN(v)) (cells[f]=cells[f]||[]).push(rule.msg);
+        var v=toNum(r[f]); if(v!==null && isNaN(v)) (cells[f]=cells[f]||[]).push(msg);
       });
-    } else { (cells[rule.field]=cells[rule.field]||[]).push(rule.msg); }
+    } else { (cells[rule.field]=cells[rule.field]||[]).push(msg); }
   });
   return {cells:cells, keys:keys};
 }
@@ -3064,7 +3078,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-20f';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-21a';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
