@@ -1214,6 +1214,22 @@ var SHEET_SEEN = false;   /* RAW — это ранее прочитанная т
 /* Отметки об удалении добавленных вручную заявок.
    Без них удаление не держалось: слияние с базой объединяет списки, и строка,
    стёртая здесь, возвращалась из базы при следующей синхронизации. */
+/* Отметки о снятых правках. Без них снятие не держалось: слияние берёт
+   за основу всё, что лежит в базе, и правка, убранная здесь, возвращалась. */
+var DELEDITS = DB.get('deledits', []) || [];
+var DELEDITS_CAP = 1500;
+function markEditDeleted(k){
+  if(!k || DELEDITS.indexOf(k) >= 0) return;
+  DELEDITS.push(k);
+  if(DELEDITS.length > DELEDITS_CAP) DELEDITS = DELEDITS.slice(-DELEDITS_CAP);
+}
+function saveDelEdits(){ DB.set('deledits', DELEDITS); }
+/* правку снова внесли руками — отметку о снятии убираем */
+function unmarkEditDeleted(k){
+  var n = DELEDITS.indexOf(k);
+  if(n < 0) return;
+  DELEDITS.splice(n, 1); saveDelEdits();
+}
 var DELROWS = DB.get('delrows', []) || [];
 function isRowDeleted(i){ return DELROWS.indexOf(i) >= 0; }
 function markRowDeleted(i){
@@ -2168,8 +2184,9 @@ function setCellValue(i, f, next){
     var origVal = src[f];
     var origCmp = (origVal===null||origVal===undefined)? null : String(origVal);
     var ek = editKey(row, f);
-    if(nextCmp===origCmp) delete EDITS[ek]; else EDITS[ek]=next;
-    persistEdits();
+    if(nextCmp===origCmp){ delete EDITS[ek]; markEditDeleted(ek); }
+    else { EDITS[ek]=next; unmarkEditDeleted(ek); }
+    saveDelEdits(); persistEdits();
   }
   var col = COLS.find(function(c){ return c.f===f; }) || {t:f};
   logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login,
@@ -2258,8 +2275,9 @@ function commitCell(el){
     var origVal = src[f];
     var origCmp = (origVal===null||origVal===undefined)? null : String(origVal);
     var ek = editKey(row, f);
-    if(nextCmp===origCmp) delete EDITS[ek]; else EDITS[ek]=next;
-    persistEdits();
+    if(nextCmp===origCmp){ delete EDITS[ek]; markEditDeleted(ek); }
+    else { EDITS[ek]=next; unmarkEditDeleted(ek); }
+    saveDelEdits(); persistEdits();
   }
   var col = COLS.find(function(c){ return c.f===f; }) || {t:f, type:type};
   logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login,
@@ -2417,7 +2435,8 @@ document.addEventListener('click', function(e){
   snaps.unshift({name:'До возврата заявки № '+row.id+' к данным таблицы', user:SESSION.login,
                  when:nowStr(), ts:new Date().toISOString(), edits:JSON.parse(JSON.stringify(EDITS))});
   saveSnaps(snaps.slice(0,30));
-  keys.forEach(function(k){ delete EDITS[k]; });
+  keys.forEach(function(k){ delete EDITS[k]; markEditDeleted(k); });
+  saveDelEdits();
   persistEdits(); assignKeys(); applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
   logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
     fieldLabel:'Возврат заявки № '+row.id+' к данным таблицы',
@@ -2669,12 +2688,13 @@ function autoRepairMovedOnce(){
   r.jobs.forEach(function(j){
     var ek = editKey(j.row, j.f);
     if(!EDITS.hasOwnProperty(ek)) return;
-    delete EDITS[ek]; done++;
+    delete EDITS[ek]; markEditDeleted(ek); done++;
     logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login,
       i:j.row.i, id:j.row.id, k:j.row._k, field:j.f, fieldLabel:j.t,
       before:(j.cur==null?null:String(j.cur)), after:(j.was==null?null:String(j.was))});
   });
   if(!done) return;
+  saveDelEdits();
   persistEdits(); assignKeys(); applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
   logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
     fieldLabel:'Возврат перезаписанных заявок',
@@ -2718,11 +2738,12 @@ function repairMovedValues(){
   jobs.forEach(function(j){
     var ek = editKey(j.row, j.f);
     if(!EDITS.hasOwnProperty(ek)) return;
-    delete EDITS[ek]; done++;
+    delete EDITS[ek]; markEditDeleted(ek); done++;
     logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login,
       i:j.row.i, id:j.row.id, k:j.row._k, field:j.f, fieldLabel:j.t,
       before:(j.cur==null?null:String(j.cur)), after:(j.was==null?null:String(j.was))});
   });
+  saveDelEdits();
   persistEdits(); assignKeys(); applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
   logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
     fieldLabel:'Возврат перезаписанных заявок',
@@ -2936,7 +2957,7 @@ var API_PATHS = ['/data/hr.json','/reports/summary','/hr/data','/service/records
 var API_HEAD = {'Content-Type':'text/plain;charset=UTF-8'};
 var CLOUD = {on:null, base:null,
              /* лёгкие ключи — их тянем каждый раз */
-             keys:['users','edits','newrows','snapshots','gs','removed','delrows'],
+             keys:['users','edits','newrows','snapshots','gs','removed','delrows','deledits'],
              /* журналы весят под мегабайт: качаем один раз за сеанс и по заходу в «Историю» */
              heavy:['history','logins'], gotHeavy:false,
              journals:{history:HIST_CAP_REF(), logins:LOGIN_CAP_REF()}, pushing:{}, lastPull:0};
@@ -3173,7 +3194,10 @@ function cloudPull(pathIdx){
         var local = DB.get('edits', {}) || {};
         var localTs = DB.get('edits_ts', 0);
         var out = {}, changed = false;
-        Object.keys(remote.value).forEach(function(k){ out[k] = remote.value[k]; });
+        Object.keys(remote.value).forEach(function(k){
+          if(DELEDITS.indexOf(k) >= 0) return;      /* правку сняли — из базы не поднимаем */
+          out[k] = remote.value[k];
+        });
         Object.keys(local).forEach(function(k){
           if(!(k in out)){ out[k] = local[k]; changed = true; return; }
           /* одну и ту же ячейку правили в двух местах — берём ту сторону, что свежее */
@@ -3184,6 +3208,15 @@ function cloudPull(pathIdx){
         }
       })();
       /* добавленные вручную заявки тоже объединяем по ключу строки */
+      (function mergeDelEdits(){
+        var remote = d['deledits'];
+        if(!remote || !Array.isArray(remote.value)) return;
+        var out = DELEDITS.slice();
+        remote.value.forEach(function(k){ if(out.indexOf(k)<0) out.push(k); });
+        if(out.length !== DELEDITS.length){
+          DELEDITS = out.slice(-DELEDITS_CAP); saveDelEdits(); touched = true;
+        }
+      })();
       /* отметки об удалении сводим объединением: удалили где угодно — значит удалено */
       (function mergeDel(){
         var remote = d['delrows'];
@@ -3230,6 +3263,10 @@ function cloudPull(pathIdx){
       if(touched){
         try{
           EDITS = DB.get('edits', {});
+          DELEDITS = DB.get('deledits', []) || [];
+          Object.keys(EDITS).forEach(function(k){
+            if(DELEDITS.indexOf(k)>=0) delete EDITS[k];   /* снятую правку обратно не берём */
+          });
           DELROWS = DB.get('delrows', []) || [];
           NEWROWS = (DB.get('newrows', []) || []).filter(function(r){ return r && !isRowDeleted(r.i); });
           dropBlankNewRows();
@@ -3450,7 +3487,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-21o';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-21p';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
