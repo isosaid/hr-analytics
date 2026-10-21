@@ -2544,7 +2544,7 @@ function renderAudit(){
     '<b>Разбор подозрительных правок</b><span>'+
     (movedCount && canManageData()
       ? '<button class="btn" id="auditFix" style="padding:3px 10px;font-size:12px;margin-right:8px">'+
-        '↺ Вернуть переехавшие значения ('+movedCount+')</button>' : '')+
+        '↺ Вернуть перезаписанные заявки ('+list.filter(function(z){return z.moved;}).length+')</button>' : '')+
     '<button class="btn" id="auditClose" style="padding:3px 10px;font-size:12px">Закрыть</button></span></div>';
   if(!list.length){
     html += '<div style="margin-top:8px;font-size:13px">Подозрительных значений не нашлось: '+
@@ -2601,18 +2601,28 @@ function renderAudit(){
 function repairMovedValues(){
   if(!canManageData()){ alert('Доступно сотрудникам Авесто и администратору.'); return; }
   var res = auditSuspicious();
-  var jobs = [];
+  /* Если хоть одно значение строки переехало из другой заявки, перезаписана обычно
+     вся строка: позиция, отдел, даты, TEAM. Возвращать половину нельзя — получится
+     смесь двух заявок. Поэтому снимаем со строки все правки целиком. */
+  var jobs = [], rowsTouched = 0;
   res.list.forEach(function(x){
-    x.items.forEach(function(it){
-      if(it.from) jobs.push({row:x.row, f:it.f, t:it.t, cur:it.cur, was:it.was, from:it.from});
+    if(!x.moved) return;
+    rowsTouched++;
+    COLS.forEach(function(col){
+      var ek = editKey(x.row, col.f);
+      if(!EDITS.hasOwnProperty(ek)) return;
+      var src = RAW.filter(function(y){ return y.i===x.row.i; })[0] || {};
+      jobs.push({row:x.row, f:col.f, t:col.t, cur:x.row[col.f], was:src[col.f]});
     });
   });
   if(!jobs.length){ alert('Переехавших значений не найдено.'); return; }
-  if(!confirm('Вернуть '+jobs.length+' значени'+(jobs.length===1?'е':'й')+
-      ' к данным Google Sheets?\n\nЭто значения, которые журнал помнит за другими заявками. '+
-      'Версия данных сохранится — вернуться можно.')) return;
+  if(!confirm('Вернуть к данным Google Sheets '+rowsTouched+' заявк'+
+      (rowsTouched===1?'у':(rowsTouched<5?'и':'')) + ' ('+jobs.length+' ячеек)?\n\n'+
+      'В этих заявках есть значения, которые журнал помнит за другими номерами, — '+
+      'похоже, строки перезаписаны чужими данными. Снимаем с них все правки, '+
+      'останутся значения таблицы.\n\nВерсия данных сохранится — вернуться можно.')) return;
   var snaps = getSnaps();
-  snaps.unshift({name:'До возврата переехавших значений', user:SESSION.login, when:nowStr(),
+  snaps.unshift({name:'До возврата перезаписанных заявок', user:SESSION.login, when:nowStr(),
                  ts:new Date().toISOString(), edits:JSON.parse(JSON.stringify(EDITS)),
                  newrows:JSON.parse(JSON.stringify(NEWROWS))});
   saveSnaps(snaps.slice(0,30));
@@ -2627,11 +2637,12 @@ function repairMovedValues(){
   });
   persistEdits(); assignKeys(); applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
   logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
-    fieldLabel:'Возврат переехавших значений',
-    before:done+' значений', after:'данные из Google Sheets'});
+    fieldLabel:'Возврат перезаписанных заявок',
+    before:rowsTouched+' заявок, '+done+' ячеек', after:'данные из Google Sheets'});
   renderHistory();
   renderAudit();
-  alert('Возвращено значений: '+done+'. Версия данных сохранена — откат доступен в «Истории».');
+  alert('Возвращено заявок: '+rowsTouched+' ('+done+' ячеек). '+
+        'Версия данных сохранена — откат доступен в «Истории».');
 }
 document.getElementById('auditBtn').addEventListener('click', function(){
   var box = document.getElementById('auditBox');
@@ -3347,7 +3358,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-21i';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-21j';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
