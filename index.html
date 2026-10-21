@@ -2579,10 +2579,12 @@ function renderAudit(){
     });
   });
   html += '<div style="margin-top:6px;font-size:13.5px;line-height:1.7">'+
-    '<b>'+movedRows.length+'</b> '+plural(movedRows.length,'заявка','заявки','заявок')+
-    ' <b>'+plural(movedRows.length,'перезаписана','перезаписаны','перезаписано')+
-    ' чужими данными</b> — кнопка вверху вернёт '+
-    (movedRows.length===1?'её':'их')+' к Google Sheets.<br>'+
+    (movedRows.length
+      ? '<b>'+movedRows.length+'</b> '+plural(movedRows.length,'заявка','заявки','заявок')+
+        ' <b>'+plural(movedRows.length,'перезаписана','перезаписаны','перезаписано')+
+        ' чужими данными</b> — кнопка вверху вернёт '+
+        (movedRows.length===1?'её':'их')+' к Google Sheets.'
+      : 'Заявок, перезаписанных чужими данными, <b>нет</b>.')+'<br>'+
     '<b>'+fromSheet+'</b> '+plural(fromSheet,'заявка','заявки','заявок')+
     ' с неверными датами — так '+plural(fromSheet,'стоит','стоят','стоит')+
     ' в самой таблице, править нужно там.</div>'+
@@ -2630,6 +2632,57 @@ function renderAudit(){
 /* Снять правки, которые опознаны как переехавшие из другой заявки.
    Все они сделаны поверх строк из Google Sheets, поэтому снятие правки
    возвращает значение таблицы — то же самое делает кнопка «Как в Google Sheets». */
+/* строки, перезаписанные чужими данными, и все правки на них */
+function movedRepairJobs(){
+  var res = auditSuspicious();
+  var jobs = [], rows = 0;
+  res.list.forEach(function(x){
+    if(!x.moved) return;
+    rows++;
+    COLS.forEach(function(col){
+      var ek = editKey(x.row, col.f);
+      if(!EDITS.hasOwnProperty(ek)) return;
+      var src = RAW.filter(function(y){ return y.i===x.row.i; })[0] || {};
+      jobs.push({row:x.row, f:col.f, t:col.t, cur:x.row[col.f], was:src[col.f]});
+    });
+  });
+  return {jobs:jobs, rows:rows};
+}
+/* Разовый возврат: заявки Азота 480–484 перезаписаны телекомовскими вакансиями
+   через ошибку подбора строки. Делаем то же, что кнопка, но без лишнего шага. */
+var MOVED_TAG = 'moved-back-2026-10-21';
+function autoRepairMovedOnce(){
+  if(!SESSION || !isAdmin()) return;
+  if(DB.get('movedback','') === MOVED_TAG) return;
+  DB.set('movedback', MOVED_TAG);
+  var r = movedRepairJobs();
+  if(!r.jobs.length) return;
+  var snaps = getSnaps();
+  snaps.unshift({name:'До возврата перезаписанных заявок', user:SESSION.login, when:nowStr(),
+                 ts:new Date().toISOString(), edits:JSON.parse(JSON.stringify(EDITS)),
+                 newrows:JSON.parse(JSON.stringify(NEWROWS))});
+  saveSnaps(snaps.slice(0,30));
+  var done = 0;
+  r.jobs.forEach(function(j){
+    var ek = editKey(j.row, j.f);
+    if(!EDITS.hasOwnProperty(ek)) return;
+    delete EDITS[ek]; done++;
+    logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login,
+      i:j.row.i, id:j.row.id, k:j.row._k, field:j.f, fieldLabel:j.t,
+      before:(j.cur==null?null:String(j.cur)), after:(j.was==null?null:String(j.was))});
+  });
+  if(!done) return;
+  persistEdits(); assignKeys(); applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
+  logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
+    fieldLabel:'Возврат перезаписанных заявок',
+    before:r.rows+' '+plural(r.rows,'заявка','заявки','заявок')+', '+
+           done+' '+plural(done,'ячейка','ячейки','ячеек'),
+    after:'данные из Google Sheets'});
+  renderHistory();
+  var m = document.getElementById('impMsg');
+  if(m) m.innerHTML = '<span style="color:var(--green)">Перезаписанные заявки возвращены к данным Google Sheets: '+
+    r.rows+'. Версия данных сохранена — откат доступен.</span>';
+}
 function repairMovedValues(){
   if(!canManageData()){ alert('Доступно сотрудникам Авесто и администратору.'); return; }
   var res = auditSuspicious();
@@ -2670,7 +2723,9 @@ function repairMovedValues(){
   persistEdits(); assignKeys(); applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
   logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
     fieldLabel:'Возврат перезаписанных заявок',
-    before:rowsTouched+' заявок, '+done+' ячеек', after:'данные из Google Sheets'});
+    before:rowsTouched+' '+plural(rowsTouched,'заявка','заявки','заявок')+', '+
+           done+' '+plural(done,'ячейка','ячейки','ячеек'),
+    after:'данные из Google Sheets'});
   renderHistory();
   renderAudit();
   alert('Возвращено заявок: '+rowsTouched+' ('+done+' ячеек). '+
@@ -3390,7 +3445,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-21m';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-21n';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
@@ -4733,6 +4788,7 @@ function startApp(user){
   setTimeout(function(){ try{ fixManualTeamOnce(); }catch(e){ console.error('team', e); } }, 65000);
   setTimeout(function(){ try{ dropDaysEditsOnce(); }catch(e){ console.error('daysauto', e); } }, 70000);
   setTimeout(function(){ try{ clearWrongFioOnce(); }catch(e){ console.error('fiofix', e); } }, 75000);
+  setTimeout(function(){ try{ autoRepairMovedOnce(); }catch(e){ console.error('movedback', e); } }, 80000);
   /* сверка версии: сразу после входа, затем раз в 15 минут и при возврате на вкладку */
   setTimeout(checkForUpdate, 8000);
   setInterval(function(){ if(!document.hidden) checkForUpdate(); }, 900000);
