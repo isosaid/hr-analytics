@@ -2568,15 +2568,23 @@ function renderAudit(){
   /* считаем в заявках, а не в значениях: кнопка возвращает строку целиком,
      и два разных счёта рядом читались как «вернули не всё» */
   var movedRows = list.filter(function(x){ return x.moved; });
-  var movedCells = 0;
+  var movedCells = 0, cosmetic = 0;
   movedRows.forEach(function(x){
-    COLS.forEach(function(col){ if(EDITS.hasOwnProperty(editKey(x.row, col.f))) movedCells++; });
+    var src = RAW.filter(function(y){ return y.i===x.row.i; })[0] || {};
+    COLS.forEach(function(col){
+      if(!EDITS.hasOwnProperty(editKey(x.row, col.f))) return;
+      /* правки вроде «ООО 'Азот'» → «ООО "Азот"» смысла не меняют — в счёт не берём */
+      if(sameMeaning(x.row[col.f], src[col.f], col.type)) cosmetic++;
+      else movedCells++;
+    });
   });
   html += '<div style="margin-top:6px;font-size:13px">Заявок к проверке: <b>'+list.length+'</b>.<br>'+
     '· <b>перезаписано чужими данными</b> — в заявке есть значение, которое журнал помнит за другим номером: '+
     '<b>'+movedRows.length+'</b> '+plural(movedRows.length,'заявка','заявки','заявок')+
-    ' (следов переноса в них '+totalMoved+', всего отличается от таблицы '+
-    movedCells+' '+plural(movedCells,'ячейка','ячейки','ячеек')+' — вернутся все);<br>'+
+    ' (следов переноса в них '+totalMoved+', а отличается от таблицы '+
+    movedCells+' '+plural(movedCells,'ячейка','ячейки','ячеек')+
+    ' — вернутся все'+(cosmetic ? '; ещё '+cosmetic+' '+
+      plural(cosmetic,'правка','правки','правок')+' значения не меняет — кавычки и пробелы' : '')+');<br>'+
     '· заявок, где <b>даты так и стоят в Google Sheets</b> — править нужно в таблице: <b>'+fromSheet+'</b>.</div>'+
     '<div style="margin-top:4px;font-size:12px;color:var(--muted)">Ещё <b>'+quiet+'</b> правок сделаны без записи в журнале, '+
     'но следов переноса у них нет — скорее всего это давние правки, чьи записи журнал уже вытеснил. '+
@@ -3375,7 +3383,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-21k';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-21l';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
