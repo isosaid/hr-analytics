@@ -2466,6 +2466,8 @@ function sameMeaning(a, b, type){
   };
   return norm(A) === norm(B);
 }
+/* поля, где значение само по себе опознаёт заявку */
+var AUDIT_FIELDS = ['fio','pos','dept','note','open','close'];
 function auditSuspicious(){
   var logged = {}, byValue = {};
   var vkey = function(field, v){
@@ -2496,12 +2498,25 @@ function auditSuspicious(){
       var interesting = changed || (datesBad && (col.f==='open' || col.f==='close'));
       if(!interesting) return;
       var rec = logged[ek];
-      /* то же значение записывали в другую заявку — похоже, оно оттуда и переехало */
+      /* То же значение записывали в другую заявку — похоже, оно оттуда и переехало.
+         Признак годится только для значений, которые сами по себе уникальны:
+         ФИО, должность, отдел, примечание, даты. Числа, статусы и названия
+         подразделений повторяются у сотен заявок законно, и по ним
+         «совпадение» ничего не значит. */
       var from = null;
-      if(changed && !rec){
-        var same = byValue[vkey(col.f, cur)] || [];
-        for(var si=0; si<same.length; si++){
-          if(same[si].k && same[si].k !== r._k){ from = same[si]; break; }
+      if(changed && !rec && AUDIT_FIELDS.indexOf(col.f) >= 0){
+        var vk = vkey(col.f, cur);
+        var plain = vk.split('§')[1] || '';
+        if(plain.length >= 5){
+          var same = byValue[vk] || [];
+          var otherRows = {};
+          same.forEach(function(h){ if(h.k) otherRows[h.k] = 1; });
+          /* значение, которое журнал помнит за многими заявками, — обычное, не перенос */
+          if(Object.keys(otherRows).length <= 3){
+            for(var si=0; si<same.length; si++){
+              if(same[si].k && same[si].k !== r._k){ from = same[si]; break; }
+            }
+          }
         }
       }
       if(!rec && changed) noRec++;
@@ -3288,7 +3303,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-21g';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-21h';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
