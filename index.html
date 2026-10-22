@@ -1104,7 +1104,10 @@ var RULES = [
    test:function(r){ var c=parseDate(r.close); return !!c && c>REF_DATE; },
    msg:'Дата закрытия позже сегодняшнего дня — вакансия не может быть закрыта будущим числом'},
   {key:'days_mismatch',  field:'days_close',label:'Срок в Google Sheets не сходится с датами',
-   test:function(r){ var o=parseDate(r.open), c=parseDate(r.close), d=toNum(r.days_close);
+   /* проверка про расхождение с Google Sheets — значит у заявки, которой
+      в таблице нет, сравнивать не с чем */
+   test:function(r){ if(isNewRow(r.i)) return false;
+     var o=parseDate(r.open), c=parseDate(r.close), d=toNum(r.days_close);
      if(!o||!c||o===undefined||c===undefined||d===null||isNaN(d)) return false;
      return Math.abs(d - daysBetween(o,c))>1; },
    /* называем оба числа: в ячейке теперь расчёт по датам, и без этого
@@ -1123,7 +1126,11 @@ var RULES = [
    test:function(r){
      var o=parseDate(r.open), c=parseDate(r.close);
      if(o && c && o!==undefined && c!==undefined && c<o) return false;
-     var d=toNum(r.days_close); return d!==null && !isNaN(d) && d<0; },
+     /* смотрим на то, что показано: срок считается по датам, и старое
+        отрицательное число из данных на экран не попадает — поправить его
+        всё равно нечем, поле не правится */
+     var shown = (r._days_close===undefined) ? toNum(r.days_close) : r._days_close;
+     var d = toNum(shown); return d!==null && !isNaN(d) && d<0; },
    msg:'Количество дней на закрытие не может быть отрицательным'},
   {key:'days_empty',     field:'days_close',label:'Не заполнены дни на закрытие',
    /* срок считается по датам, поэтому смотрим на то, что показано в ячейке,
@@ -3497,7 +3504,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-22a';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-22b';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
