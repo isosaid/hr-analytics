@@ -1425,12 +1425,27 @@ var FIO_INDEX = {};
 function fioKey(v){
   return String(v==null?'':v).replace(/\s+/g,' ').trim().toLowerCase();
 }
+/* В поле ФИО нередко пишут не человека, а пояснение: «Вакансия закрыта по решению
+   функционала», «нет кандидатов», «агентство». Считать такие записи одним
+   сотрудником нельзя — иначе заявки разных компаний выглядят как один человек. */
+var FIO_NOT_NAME = /ваканси|закрыт|отмен|приостанов|в поиске|ищем|агентств|не принят|не вышел|не нашл|отказ|уволен|перевод|сокращ|внутренн|резерв|нет кандидат|нет данных|функционал|руководств|по просьбе/i;
+function looksLikeName(v){
+  var s = String(v==null?'':v).trim();
+  if(s.length < 5 || s.length > 60) return false;  /* предложение — не имя */
+  if(FIO_NOT_NAME.test(s)) return false;
+  if(/\d/.test(s)) return false;                   /* даты и номера в ФИО не бывают */
+  return true;
+}
 function buildFioIndex(){
   FIO_INDEX = {};
   ROWS.forEach(function(r){
+    if(!looksLikeName(r.fio)) return;
     var k = fioKey(r.fio);
-    if(!k || k.length < 5) return;                 /* пометки вроде «нет» не считаем */
     (FIO_INDEX[k] = FIO_INDEX[k] || []).push(r);
+  });
+  /* одно и то же значение у многих заявок — это пометка, а не человек */
+  Object.keys(FIO_INDEX).forEach(function(k){
+    if(FIO_INDEX[k].length > 4) delete FIO_INDEX[k];
   });
 }
 /* Человека вполне могли нанять дважды: стажёром, потом специалистом — это норма.
@@ -3504,7 +3519,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-22b';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-22c';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
