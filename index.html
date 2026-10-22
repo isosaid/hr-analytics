@@ -3497,7 +3497,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-10-21q';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-10-22a';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
@@ -4355,6 +4355,62 @@ function dropDaysEditsOnce(){
    кадры подтвердили, что Искандаров Зоҳир — пастух. Здесь ФИО чужое.
    Ищем по подразделению, должности и самому ФИО, а не по номеру заявки:
    номер у добавленных вручную строк мог смениться при перенумерации. */
+/* Разовая перестановка дат у заявок, добавленных вручную, где закрытие раньше
+   открытия. Источника в Google Sheets у таких строк нет, вернуть не к чему,
+   а почерк один: обе даты заполнены и стоят наоборот — при вводе перепутали поля.
+   Меняем местами только там, где после перестановки срок получается разумным. */
+var SWAP_TAG = 'swap-dates-2026-10-22';
+function swapReversedDatesOnce(){
+  if(!SESSION || !isAdmin()) return;
+  if(DB.get('swapdates','') === SWAP_TAG) return;
+  if(!NEWROWS.length) return;
+  var targets = ROWS.filter(function(r){
+    if(!isNewRow(r.i)) return false;                /* строки из таблицы не трогаем */
+    var o = parseDate(r.open), c = parseDate(r.close);
+    if(!o || !c || o===undefined || c===undefined) return false;
+    if(c >= o) return false;
+    var d = daysBetween(c, o);                      /* срок после перестановки */
+    return d > 0 && d <= 400;                       /* полгода-год — правдоподобно */
+  });
+  DB.set('swapdates', SWAP_TAG);
+  if(!targets.length) return;
+  var snaps = getSnaps();
+  snaps.unshift({name:'До перестановки перепутанных дат', user:SESSION.login, when:nowStr(),
+                 ts:new Date().toISOString(), edits:JSON.parse(JSON.stringify(EDITS)),
+                 newrows:JSON.parse(JSON.stringify(NEWROWS))});
+  saveSnaps(snaps.slice(0,30));
+  var done = [];
+  targets.forEach(function(r){
+    var nr = NEWROWS.find(function(x){ return x.i===r.i; });
+    if(!nr) return;
+    var o = r.open, c = r.close;
+    r.open = c; r.close = o;
+    nr.open = c; nr.close = o;
+    ['open','close'].forEach(function(f){
+      var ek = editKey(r, f);
+      if(EDITS.hasOwnProperty(ek)){ delete EDITS[ek]; markEditDeleted(ek); }
+    });
+    logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, auto:true,
+      i:r.i, id:r.id, k:r._k, field:'open', fieldLabel:'Дата открытия',
+      before:dateRu(o), after:dateRu(c)});
+    logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, auto:true,
+      i:r.i, id:r.id, k:r._k, field:'close', fieldLabel:'Дата закрытия',
+      before:dateRu(c), after:dateRu(o)});
+    done.push({id:r.id, from:dateRu(o)+' → '+dateRu(c), to:dateRu(c)+' → '+dateRu(o)});
+  });
+  if(!done.length) return;
+  saveDelEdits(); persistNew(); persistEdits();
+  assignKeys(); applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
+  logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
+    fieldLabel:'Перестановка перепутанных дат',
+    before:done.length+' '+plural(done.length,'заявка','заявки','заявок'),
+    after:done.slice(0,4).map(function(x){ return '№'+x.id+': '+x.to; }).join('; ')+
+          (done.length>4?' …':'')});
+  renderHistory();
+  var m = document.getElementById('impMsg');
+  if(m) m.innerHTML = '<span style="color:var(--green)">Даты переставлены у заявок: '+done.length+
+    '. Версия данных сохранена — откат доступен.</span>';
+}
 var FIO_TAG = 'fio-marmari-2026-10-21';
 function clearWrongFioOnce(){
   if(!SESSION || !isAdmin()) return;
@@ -4840,6 +4896,7 @@ function startApp(user){
   setTimeout(function(){ try{ fixManualTeamOnce(); }catch(e){ console.error('team', e); } }, 65000);
   setTimeout(function(){ try{ dropDaysEditsOnce(); }catch(e){ console.error('daysauto', e); } }, 70000);
   setTimeout(function(){ try{ clearWrongFioOnce(); }catch(e){ console.error('fiofix', e); } }, 75000);
+  setTimeout(function(){ try{ swapReversedDatesOnce(); }catch(e){ console.error('swapdates', e); } }, 20000);
   /* возврат перезаписанных заявок нужен сразу, а не в конце очереди миграций */
   setTimeout(function(){ try{ autoRepairMovedOnce(); }catch(e){ console.error('movedback', e); } }, 12000);
   setTimeout(function(){ try{ autoRepairMovedOnce(); }catch(e){ console.error('movedback', e); } }, 45000);
