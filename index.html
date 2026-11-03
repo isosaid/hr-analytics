@@ -1254,17 +1254,24 @@ var NEWROWS = (DB.get('newrows', []) || []).filter(function(r){ return r && !isR
 /* незаполненные добавленные строки (создали и бросили) не копим — убираем при загрузке */
 /* строка, добавленная кнопкой и брошенная незаполненной: кнопка сама проставляет
    только «кол-во найма» и статус, поэтому смотрим на содержательные поля */
-var BLANK_GRACE_MS = 15*60*1000;      /* 15 минут на заполнение — чтобы не удалить то, что сейчас набирают */
+/* Час на заполнение. Раньше было 15 минут, и этого не хватало: отметка времени
+   ставится по часам того компьютера, где строку завели, а часы у всех разные.
+   Строка, заведённая человеком с уходящими вперёд часами, у соседа выглядела
+   давно брошенной и стиралась — причём сразу у всех. */
+var BLANK_GRACE_MS = 60*60*1000;
+/* время по серверным часам: так отметка «создана» значит одно и то же у всех */
+function syncNow(){ return Date.now() + ((typeof CLOUD!=='undefined' && CLOUD && CLOUD.skew) || 0); }
 function isBlankNewRow(r){
   /* подразделение кнопка подставляет сама из фильтра — содержательным признаком не считаем */
   return !['pos','dept','fio','team','note','cat','open','close']
     .some(function(f){ return r[f]!==null && r[f]!==undefined && String(r[f]).trim()!==''; });
 }
 function dropBlankNewRows(){
-  var now = Date.now(), before = NEWROWS.length;
+  var now = syncNow(), before = NEWROWS.length;
   NEWROWS = NEWROWS.filter(function(r){
     if(!isBlankNewRow(r)) return true;
     if(!r.created) return false;                         /* старые пустышки без отметки времени */
+    if(r.created > now) return true;                     /* часы автора впереди наших — не трогаем */
     return (now - r.created) < BLANK_GRACE_MS;           /* только что создали — даём дозаполнить */
   });
   if(NEWROWS.length !== before){ DB.set('newrows', NEWROWS); return before - NEWROWS.length; }
@@ -1438,8 +1445,53 @@ function stampLocalEdits(){
   if(hit){ EDITS_DIRTY_AT = now; saveEditStamps(); }
 }
 function persistEdits(){ stampLocalEdits(); DB.set('edits', EDITS); }
-function persistNew(){ DB.set('newrows', NEWROWS); }
+/* ---- то же самое для заявок, добавленных вручную ----
+   У них значения лежат в самой строке, а не в наборе правок, и при сверке
+   с базой стороны сравнивались целиком по одной общей отметке времени.
+   Отстающие часы или чужая запись, легшая секундой позже, отбрасывали всё,
+   что человек только что набрал. Теперь время помним по каждой строке. */
+var NEWROWS_TS = DB.get('newrows_row_ts', {}) || {};
+var NEWROWS_BASE = {};
+var NEW_DIRTY_AT = 0, NEW_SYNCED_AT = 0;
+function resetNewBase(list){
+  NEWROWS_BASE = {};
+  (list||[]).forEach(function(r){ if(r) NEWROWS_BASE[r.i] = JSON.stringify(r); });
+}
+resetNewBase(NEWROWS);
+function stampLocalNew(){
+  var now = Date.now(), hit = false, seen = {};
+  NEWROWS.forEach(function(r){
+    if(!r) return;
+    seen[r.i] = 1;
+    var s = JSON.stringify(r);
+    if(NEWROWS_BASE[r.i] !== s){ NEWROWS_TS[r.i] = now; NEWROWS_BASE[r.i] = s; hit = true; }
+  });
+  Object.keys(NEWROWS_BASE).forEach(function(i){
+    if(!seen[i]){ NEWROWS_TS[i] = now; delete NEWROWS_BASE[i]; hit = true; }
+  });
+  if(hit){ NEW_DIRTY_AT = now; try{ DB.set('newrows_row_ts', NEWROWS_TS); }catch(e){} }
+}
+function persistNew(){ stampLocalNew(); DB.set('newrows', NEWROWS); }
 function isNewRow(i){ return i >= 900000; }
+/* ---- внутренний номер добавленной вручную строки ----
+   Раньше брали «самый большой + 1». Номер при этом получался общим на всех:
+   два человека, добавившие заявку в одну и ту же минуту в разных браузерах,
+   получали один номер — при сверке их строки сливались в одну, и чужая работа
+   пропадала. Хуже того, после удаления строки номер освобождался и мог
+   достаться новой заявке, а он уже лежал в общем списке удалённых — такая
+   заявка исчезала сразу после создания.
+   Теперь номер собирается из времени и случайной части, совпасть он не может. */
+function newRowNumber(){
+  var busy = {};
+  ROWS.forEach(function(r){ busy[r.i] = 1; });
+  NEWROWS.forEach(function(r){ busy[r.i] = 1; });
+  for(var tries=0; tries<50; tries++){
+    var secs = Math.max(0, Math.floor((Date.now() - Date.UTC(2026,0,1))/1000));
+    var n = 1000000 + secs*1000000 + Math.floor(Math.random()*1000000);
+    if(!busy[n] && !isRowDeleted(n)) return n;
+  }
+  return 1000000 + Date.now();                 /* до сюда дело не дойдёт */
+}
 assignKeys(); migrateEdits(); applyEdits();
 
 function derive(r, manualDays){
@@ -2448,15 +2500,14 @@ function nextIdFor(company){
 }
 document.getElementById('addRowBtn').addEventListener('click', function(){
   if(!canEdit()){ alert('Недостаточно прав для добавления позиции.'); return; }
-  var maxI = 900000;
-  ROWS.forEach(function(r){ if(r.i>=900000 && r.i>=maxI) maxI = r.i+1; });
+  var rowNo = newRowNumber();
   var fc = document.getElementById('f-company').value;
   /* номер заявки продолжает нумерацию своего подразделения, а не всего холдинга */
   var maxId = nextIdFor(fc || (isCompanyUser() ? sessionCompanies()[0] : ''));
-  var row = {i:maxI, id:maxId, cat:null, pos:null, dept:null,
+  var row = {i:rowNo, id:maxId, cat:null, pos:null, dept:null,
     companyRaw:(fc||null), open:null, close:null, days_close:null, hires:1,
     interviews:null, closed_total:null, fio:null, note:null, status:STATUS_OPEN, team:null,
-    created:Date.now()};
+    created:syncNow()};
   NEWROWS.push(row); persistNew(); assignKeys(); applyEdits();
   logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, i:row.i, id:row.id,
     field:'__row', fieldLabel:'Новая заявка', before:'—', after:'заявка № '+row.id});
@@ -3199,8 +3250,9 @@ function cloudPush(key, value, attempt){
     .then(function(r){
       if(r.status===501){ CLOUD.on=false; saveSay(false, 'база не подключена'); return; }
       if(r.ok){ CLOUD.on=true; CLOUD.fails=0;
-        /* база приняла набор правок — до следующей правки спорить с ней не о чем */
+        /* база приняла наши данные — до следующей правки спорить с ней не о чем */
         if(key==='edits') EDITS_SYNCED_AT = Date.now();
+        if(key==='newrows') NEW_SYNCED_AT = Date.now();
         saveSay(true); return; }
       if(CLOUD.viaScript){ jsonpWrite(key, value, (key==='history'||key==='logins')).catch(function(){}); return; }
       if(cloudTransient(r.status) && attempt<2)
@@ -3344,18 +3396,25 @@ function cloudPull(pathIdx){
         var local = DB.get('newrows', []) || [];
         var localTs = DB.get('newrows_ts', 0);
         /* одну и ту же строку правили в двух местах — берём ту сторону, что свежее.
-           Раньше всегда побеждала база: человек стирал дату, а через минуту она возвращалась. */
-        var localWins = localTs >= remote.ts;
-        var first = localWins ? local : remote.value;
-        var second = localWins ? remote.value : local;
-        var seen = {}, out = [];
-        first.concat(second).forEach(function(r){
+           Сравниваем по каждой строке отдельно и в серверном времени: прежде
+           одна общая отметка отбрасывала всё, что человек только что набрал. */
+        var skew = CLOUD.skew || 0;
+        var waiting = !!CLOUD_Q['newrows'] || NEW_DIRTY_AT > NEW_SYNCED_AT;
+        function mineNewer(i){
+          if(waiting && NEWROWS_TS[i]) return true;   /* ещё не отправлено — остаётся за нами */
+          var t = NEWROWS_TS[i] ? NEWROWS_TS[i] : localTs;
+          return t ? (t + skew) >= remote.ts : false;
+        }
+        var byI = {}, order = [];
+        function put(r, isLocal){
           if(!r) return;
           if(isRowDeleted(r.i)) return;      /* заявку удалили — из базы её не поднимаем */
-          var k = 'm' + r.i;
-          if(seen[k]) return;
-          seen[k] = 1; out.push(r);
-        });
+          if(byI[r.i] === undefined){ byI[r.i] = r; order.push(r.i); return; }
+          if(isLocal && mineNewer(r.i)) byI[r.i] = r;
+        }
+        remote.value.forEach(function(r){ put(r, false); });
+        local.forEach(function(r){ put(r, true); });
+        var out = order.map(function(i){ return byI[i]; });
         out.sort(function(a,b){ return a.i - b.i; });
         if(JSON.stringify(out)!==JSON.stringify(local)){
           DB.set('newrows', out); DB.set('newrows_ts', Math.max(remote.ts, DB.get('newrows_ts',0))); touched = true;
@@ -3383,6 +3442,7 @@ function cloudPull(pathIdx){
           resetEditBase(EDITS);
           DELROWS = DB.get('delrows', []) || [];
           NEWROWS = (DB.get('newrows', []) || []).filter(function(r){ return r && !isRowDeleted(r.i); });
+          resetNewBase(NEWROWS);
           dropBlankNewRows();
           assignKeys(); applyEdits(); rebuild(); refreshFilterOptions(); renderAll();
           try{ maybeAutoRestore(); }catch(e2){ console.error('autofix', e2); }
@@ -3601,7 +3661,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-11-03b';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-11-03c';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
