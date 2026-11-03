@@ -1931,6 +1931,8 @@ function pivotRows(){
   var base = applyFilters();
   var q=(document.getElementById('pivotSearch').value||'').toLowerCase();
   var onlyErr=document.getElementById('onlyErrors').checked;
+  /* эти фильтры компании недоступны — сбрасываем, если остались от прошлой сессии */
+  if(isCompanyUser() && (activeIssue==='__diff' || activeIssue==='__added')) activeIssue='';
   return base.filter(function(r){
     if(subsetMode && SUBSETS[subsetMode] && !SUBSETS[subsetMode].test(r)) return false;
     if(activeIssue==='__added'){ if(!isNewRow(r.i)) return false; }
@@ -1960,17 +1962,21 @@ function renderChips(base){
     .map(function(rule){
       return '<button class="chip'+(activeIssue===rule.key?' on':'')+'" data-key="'+rule.key+'" title="'+esc(rule.msg)+'">'+
              esc(rule.label)+' <span class="cnt">'+fmt(counts[rule.key])+'</span></button>'; }).join('');
-  /* строки, где правка в дашборде расходится со значением в таблице */
-  var diff = base.filter(function(r){ return rowDiffersFromSheet(r); }).length;
-  if(diff) html += '<button class="chip'+(activeIssue==='__diff'?' on':'')+'" data-key="__diff" '+
-    'title="В этих строках значение в дашборде исправлено вручную и отличается от Google Sheets. '+
-    'Наведите курсор на зелёную ячейку — увидите, что стоит в таблице">'+
-    'Отличается от Google Sheets <span class="cnt">'+fmt(diff)+'</span></button>';
-  /* строки, которых нет в Google Sheets: их завели кнопкой в дашборде */
-  var added = base.filter(function(r){ return isNewRow(r.i); }).length;
-  if(added) html += '<button class="chip'+(activeIssue==='__added'?' on':'')+'" data-key="__added" '+
-    'title="Эти заявки завели кнопкой «Добавить позицию». В Google Sheets их нет — перенесите туда или удалите">'+
-    'Нет в Google Sheets <span class="cnt">'+fmt(added)+'</span></button>';
+  /* учётке компании служебные фильтры по Google Sheets не показываем:
+     таблица-источник — забота Авесто, компания работает только со своими строками */
+  if(!isCompanyUser()){
+    /* строки, где правка в дашборде расходится со значением в таблице */
+    var diff = base.filter(function(r){ return rowDiffersFromSheet(r); }).length;
+    if(diff) html += '<button class="chip'+(activeIssue==='__diff'?' on':'')+'" data-key="__diff" '+
+      'title="В этих строках значение в дашборде исправлено вручную и отличается от Google Sheets. '+
+      'Наведите курсор на зелёную ячейку — увидите, что стоит в таблице">'+
+      'Отличается от Google Sheets <span class="cnt">'+fmt(diff)+'</span></button>';
+    /* строки, которых нет в Google Sheets: их завели кнопкой в дашборде */
+    var added = base.filter(function(r){ return isNewRow(r.i); }).length;
+    if(added) html += '<button class="chip'+(activeIssue==='__added'?' on':'')+'" data-key="__added" '+
+      'title="Эти заявки завели кнопкой «Добавить позицию». В Google Sheets их нет — перенесите туда или удалите">'+
+      'Нет в Google Sheets <span class="cnt">'+fmt(added)+'</span></button>';
+  }
   if(badRows===0) html += '<span class="chip zero">Все проверки пройдены <span class="cnt">0</span></span>';
   document.getElementById('issueChips').innerHTML = html;
   document.getElementById('issueChips').querySelectorAll('.chip[data-key]').forEach(function(btn){
@@ -3530,7 +3536,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-11-02a';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-11-03a';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
