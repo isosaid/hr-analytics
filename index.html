@@ -1392,7 +1392,52 @@ function applyEdits(){
   }
 }
 var EDITS_LOST = 0;
-function persistEdits(){ DB.set('edits', EDITS); }
+/* ---- отметка времени у каждой правки ----
+   Раньше у всего набора правок была одна общая отметка, и при сверке с базой
+   сравнивались наборы целиком. Из-за этого свежая правка откатывалась к прежнему
+   значению в двух случаях: кто-то другой записал свои правки на секунду позже нашей,
+   либо часы компьютера отставали от серверных. Теперь помним время по каждой ячейке
+   и сверяем по ней, приведя наши часы к серверным (CLOUD.skew).
+   Отметки лежат только в этом браузере, в общую базу не уходят и подчищаются. */
+var EDITS_TS = DB.get('edits_cell_ts', {}) || {};
+var EDITS_TS_CAP = 1200, EDITS_TS_AGE = 21*24*3600*1000;
+var EDITS_BASE = {};          /* снимок набора: по нему видно, что изменили именно здесь */
+var EDITS_DIRTY_AT = 0;       /* когда здесь последний раз меняли правки */
+var EDITS_SYNCED_AT = 0;      /* когда база последний раз приняла наш набор */
+function resetEditBase(src){
+  EDITS_BASE = {};
+  if(!src) return;
+  Object.keys(src).forEach(function(k){ EDITS_BASE[k] = src[k]; });
+}
+resetEditBase(EDITS);
+function saveEditStamps(){
+  var ks = Object.keys(EDITS_TS);
+  if(ks.length > EDITS_TS_CAP){
+    var edge = Date.now() - EDITS_TS_AGE, keep = {};
+    ks.filter(function(k){ return EDITS_TS[k] > edge; })
+      .sort(function(a,b){ return EDITS_TS[b] - EDITS_TS[a]; })
+      .slice(0, EDITS_TS_CAP)
+      .forEach(function(k){ keep[k] = EDITS_TS[k]; });
+    EDITS_TS = keep;
+  }
+  try{ DB.set('edits_cell_ts', EDITS_TS); }catch(e){}
+}
+/* отметить ячейки, изменившиеся здесь со времени прошлого сохранения */
+function stampLocalEdits(){
+  var now = Date.now(), hit = false, k;
+  for(k in EDITS){
+    if(!EDITS.hasOwnProperty(k)) continue;
+    if(!EDITS_BASE.hasOwnProperty(k) || String(EDITS_BASE[k]) !== String(EDITS[k])){
+      EDITS_TS[k] = now; EDITS_BASE[k] = EDITS[k]; hit = true;
+    }
+  }
+  for(k in EDITS_BASE){
+    if(!EDITS_BASE.hasOwnProperty(k)) continue;
+    if(!EDITS.hasOwnProperty(k)){ EDITS_TS[k] = now; delete EDITS_BASE[k]; hit = true; }
+  }
+  if(hit){ EDITS_DIRTY_AT = now; saveEditStamps(); }
+}
+function persistEdits(){ stampLocalEdits(); DB.set('edits', EDITS); }
 function persistNew(){ DB.set('newrows', NEWROWS); }
 function isNewRow(i){ return i >= 900000; }
 assignKeys(); migrateEdits(); applyEdits();
@@ -3153,7 +3198,10 @@ function cloudPush(key, value, attempt){
                     body:JSON.stringify(body), cache:'no-store'})
     .then(function(r){
       if(r.status===501){ CLOUD.on=false; saveSay(false, 'база не подключена'); return; }
-      if(r.ok){ CLOUD.on=true; CLOUD.fails=0; saveSay(true); return; }
+      if(r.ok){ CLOUD.on=true; CLOUD.fails=0;
+        /* база приняла набор правок — до следующей правки спорить с ней не о чем */
+        if(key==='edits') EDITS_SYNCED_AT = Date.now();
+        saveSay(true); return; }
       if(CLOUD.viaScript){ jsonpWrite(key, value, (key==='history'||key==='logins')).catch(function(){}); return; }
       if(cloudTransient(r.status) && attempt<2)
         setTimeout(function(){ cloudPush(key, value, attempt+1); }, 3000*(attempt+1));
@@ -3215,6 +3263,9 @@ function cloudPull(pathIdx){
         e2.code=200; throw e2;
       }
       CLOUD.on = true;
+      /* поправка на расхождение часов: без неё отстающий компьютер считал любую
+         запись в базе свежее своей правки и откатывал её */
+      if(typeof j.now === 'number' && j.now > 0) CLOUD.skew = j.now - Date.now();
       var d = j.data || {}, touched = false;
 
       /* журналы: сливаем в обе стороны по uid */
@@ -3243,14 +3294,25 @@ function cloudPull(pathIdx){
         var local = DB.get('edits', {}) || {};
         var localTs = DB.get('edits_ts', 0);
         var out = {}, changed = false;
+        /* часы компьютера могут отставать от серверных — сравниваем в одном времени */
+        var skew = CLOUD.skew || 0;
+        /* наш набор ещё не принят базой: всё, что набрали здесь, остаётся за нами */
+        var waiting = !!CLOUD_Q['edits'] || EDITS_DIRTY_AT > EDITS_SYNCED_AT;
+        function mineNewer(k){
+          if(waiting && EDITS_TS[k]) return true;
+          var t = EDITS_TS[k] ? EDITS_TS[k] : localTs;
+          return t ? (t + skew) >= remote.ts : false;
+        }
         Object.keys(remote.value).forEach(function(k){
           if(DELEDITS.indexOf(k) >= 0) return;      /* правку сняли — из базы не поднимаем */
+          /* ячейку очистили здесь, и это новее записи в базе — обратно не поднимаем */
+          if(!(k in local) && EDITS_TS[k] && mineNewer(k)) return;
           out[k] = remote.value[k];
         });
         Object.keys(local).forEach(function(k){
           if(!(k in out)){ out[k] = local[k]; changed = true; return; }
           /* одну и ту же ячейку правили в двух местах — берём ту сторону, что свежее */
-          if(String(out[k]) !== String(local[k]) && localTs >= remote.ts){ out[k] = local[k]; changed = true; }
+          if(String(out[k]) !== String(local[k]) && mineNewer(k)){ out[k] = local[k]; changed = true; }
         });
         if(changed || JSON.stringify(out)!==JSON.stringify(local)){
           DB.set('edits', out); DB.set('edits_ts', Math.max(remote.ts, localTs)); touched = true;
@@ -3316,6 +3378,9 @@ function cloudPull(pathIdx){
           Object.keys(EDITS).forEach(function(k){
             if(DELEDITS.indexOf(k)>=0) delete EDITS[k];   /* снятую правку обратно не берём */
           });
+          /* свёрнутый набор становится точкой отсчёта: то, что пришло из базы,
+             не должно потом выглядеть как правка, сделанная здесь */
+          resetEditBase(EDITS);
           DELROWS = DB.get('delrows', []) || [];
           NEWROWS = (DB.get('newrows', []) || []).filter(function(r){ return r && !isRowDeleted(r.i); });
           dropBlankNewRows();
@@ -3536,7 +3601,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-11-03a';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-11-03b';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
