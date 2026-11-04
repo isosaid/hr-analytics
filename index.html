@@ -1223,19 +1223,37 @@ var SHEET_SEEN = false;   /* RAW — это ранее прочитанная т
    стёртая здесь, возвращалась из базы при следующей синхронизации. */
 /* Отметки о снятых правках. Без них снятие не держалось: слияние берёт
    за основу всё, что лежит в базе, и правка, убранная здесь, возвращалась. */
-var DELEDITS = DB.get('deledits', []) || [];
+/* Отметка хранится с датой и живёт месяц. Вечная отметка убивала и ту правку,
+   которую позже внесли в ту же ячейку: человек вписывал значение, оно
+   сохранялось, а наутро на его месте снова было прежнее. */
 var DELEDITS_CAP = 1500;
-function markEditDeleted(k){
-  if(!k || DELEDITS.indexOf(k) >= 0) return;
-  DELEDITS.push(k);
-  if(DELEDITS.length > DELEDITS_CAP) DELEDITS = DELEDITS.slice(-DELEDITS_CAP);
+var DELEDITS_TTL = 30*24*3600*1000;
+function normDel(v){
+  var out = {};
+  if(Array.isArray(v)) v.forEach(function(k){ out[k] = 1; });        /* прежний формат */
+  else if(v && typeof v === 'object') Object.keys(v).forEach(function(k){ out[k] = +v[k] || 1; });
+  return out;
 }
-function saveDelEdits(){ DB.set('deledits', DELEDITS); }
+var DELEDITS = normDel(DB.get('deledits', null));
+function isEditDeleted(k){
+  var ts = DELEDITS[k];
+  if(!ts) return false;
+  if(ts > 1 && (Date.now() - ts) > DELEDITS_TTL) return false;       /* отметка устарела */
+  return true;
+}
+function markEditDeleted(k){ if(k) DELEDITS[k] = Date.now(); }
+function trimDelEdits(){
+  var keys = Object.keys(DELEDITS);
+  if(keys.length <= DELEDITS_CAP) return;
+  keys.sort(function(a,b){ return (DELEDITS[a]||0) - (DELEDITS[b]||0); })
+      .slice(0, keys.length - DELEDITS_CAP)
+      .forEach(function(k){ delete DELEDITS[k]; });
+}
+function saveDelEdits(){ trimDelEdits(); DB.set('deledits', DELEDITS); }
 /* правку снова внесли руками — отметку о снятии убираем */
 function unmarkEditDeleted(k){
-  var n = DELEDITS.indexOf(k);
-  if(n < 0) return;
-  DELEDITS.splice(n, 1); saveDelEdits();
+  if(DELEDITS[k]===undefined) return;
+  delete DELEDITS[k]; saveDelEdits();
 }
 var DELROWS = DB.get('delrows', []) || [];
 function isRowDeleted(i){ return DELROWS.indexOf(i) >= 0; }
@@ -3356,7 +3374,9 @@ function cloudPull(pathIdx){
           return t ? (t + skew) >= remote.ts : false;
         }
         Object.keys(remote.value).forEach(function(k){
-          if(DELEDITS.indexOf(k) >= 0) return;      /* правку сняли — из базы не поднимаем */
+          /* правку сняли — из базы не поднимаем, но только если её не внесли заново:
+             свежая правка всегда важнее прежней отметки о снятии */
+          if(isEditDeleted(k) && !(k in local)) return;
           /* ячейку очистили здесь, и это новее записи в базе — обратно не поднимаем */
           if(!(k in local) && EDITS_TS[k] && mineNewer(k)) return;
           out[k] = remote.value[k];
@@ -3366,6 +3386,12 @@ function cloudPull(pathIdx){
           /* одну и ту же ячейку правили в двух местах — берём ту сторону, что свежее */
           if(String(out[k]) !== String(local[k]) && mineNewer(k)){ out[k] = local[k]; changed = true; }
         });
+        /* в ячейке снова есть правка — отметка о снятии отслужила своё и только мешает */
+        var dropped = 0;
+        Object.keys(out).forEach(function(k){
+          if(DELEDITS[k]!==undefined){ delete DELEDITS[k]; dropped++; }
+        });
+        if(dropped){ saveDelEdits(); touched = true; }
         if(changed || JSON.stringify(out)!==JSON.stringify(local)){
           DB.set('edits', out); DB.set('edits_ts', Math.max(remote.ts, localTs)); touched = true;
         }
@@ -3373,12 +3399,12 @@ function cloudPull(pathIdx){
       /* добавленные вручную заявки тоже объединяем по ключу строки */
       (function mergeDelEdits(){
         var remote = d['deledits'];
-        if(!remote || !Array.isArray(remote.value)) return;
-        var out = DELEDITS.slice();
-        remote.value.forEach(function(k){ if(out.indexOf(k)<0) out.push(k); });
-        if(out.length !== DELEDITS.length){
-          DELEDITS = out.slice(-DELEDITS_CAP); saveDelEdits(); touched = true;
-        }
+        if(!remote || remote.value===undefined || remote.value===null) return;
+        var rem = normDel(remote.value), before = JSON.stringify(DELEDITS);
+        Object.keys(rem).forEach(function(k){
+          if(DELEDITS[k]===undefined || rem[k] > DELEDITS[k]) DELEDITS[k] = rem[k];
+        });
+        if(JSON.stringify(DELEDITS) !== before){ saveDelEdits(); touched = true; }
       })();
       /* отметки об удалении сводим объединением: удалили где угодно — значит удалено */
       (function mergeDel(){
@@ -3433,10 +3459,9 @@ function cloudPull(pathIdx){
       if(touched){
         try{
           EDITS = DB.get('edits', {});
-          DELEDITS = DB.get('deledits', []) || [];
-          Object.keys(EDITS).forEach(function(k){
-            if(DELEDITS.indexOf(k)>=0) delete EDITS[k];   /* снятую правку обратно не берём */
-          });
+          /* слияние выше уже учло отметки о снятии — второй раз чистить нельзя,
+             иначе под нож попадает правка, внесённая заново в ту же ячейку */
+          DELEDITS = normDel(DB.get('deledits', null));
           /* свёрнутый набор становится точкой отсчёта: то, что пришло из базы,
              не должно потом выглядеть как правка, сделанная здесь */
           resetEditBase(EDITS);
@@ -3661,7 +3686,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-11-03c';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-11-04b';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
