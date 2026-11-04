@@ -3263,9 +3263,21 @@ document.addEventListener('visibilitychange', function(){ if(document.hidden && 
 function cloudPush(key, value, attempt){
   if(CLOUD.on===false) return;
   attempt = attempt || 0;
-  var body = (key==='history'||key==='logins')
-    ? {key:key, merge:value, cap:(key==='history'?HIST_CAP_REF():LOGIN_CAP_REF())}
-    : {key:key, value:value};
+  /* Правки и списки больше не пишем «поверх всего»: когда за одной учёткой сидят
+     двое, тот, кто сохранился вторым, стирал правки первого. Сервер теперь сличает
+     ячейки по времени и объединяет списки сам. */
+  var body;
+  if(key==='history' || key==='logins'){
+    body = {key:key, merge:value, cap:(key==='history'?HIST_CAP_REF():LOGIN_CAP_REF())};
+  } else if(key==='edits'){
+    body = {key:key, cells:value, mts:EDITS_TS, base:(DB.get('edits_base', 0) || 0)};
+  } else if(key==='newrows'){
+    body = {key:key, union:value, gone:(DELROWS || [])};
+  } else if(key==='delrows' || key==='deledits'){
+    body = {key:key, union:value};
+  } else {
+    body = {key:key, value:value};
+  }
   fetch(apiBase(), {method:'POST', headers:API_HEAD,
                     body:JSON.stringify(body), cache:'no-store'})
     .then(function(r){
@@ -3364,6 +3376,11 @@ function cloudPull(pathIdx){
       (function mergeEdits(){
         var remote = d['edits'];
         if(!remote || !remote.value || typeof remote.value!=='object') return;
+        /* Версия набора в базе, с которой мы сверились. Её отдаём серверу при записи:
+           по ней он отличает ячейку, которую мы сняли, от чужой, появившейся уже
+           после нашей сверки. Брать для этого edits_ts нельзя — там время нашей
+           последней правки, а не версия базы. */
+        DB.set('edits_base', remote.ts || 0);
         var local = DB.get('edits', {}) || {};
         var localTs = DB.get('edits_ts', 0);
         var out = {}, changed = false;
@@ -3376,10 +3393,14 @@ function cloudPull(pathIdx){
           var t = EDITS_TS[k] ? EDITS_TS[k] : localTs;
           return t ? (t + skew) >= remote.ts : false;
         }
+        /* время правки каждой ячейки на сервере — по нему видно, что свежее:
+           снятие правки здесь или правка, внесённая у коллеги */
+        var rmts = (remote.mts && typeof remote.mts === 'object') ? remote.mts : {};
         Object.keys(remote.value).forEach(function(k){
-          /* правку сняли — из базы не поднимаем, но только если её не внесли заново:
-             свежая правка всегда важнее прежней отметки о снятии */
-          if(isEditDeleted(k) && !(k in local)) return;
+          /* правку сняли — из базы не поднимаем, но только если её не внесли заново.
+             Прежде отметка о снятии держалась вечно, и ячейка становилась глухой:
+             коллега за тем же логином вписывал значение, а здесь оно не появлялось. */
+          if(isEditDeleted(k) && !(k in local) && !(rmts[k] && rmts[k] > (DELEDITS[k] || 0))) return;
           /* ячейку очистили здесь, и это новее записи в базе — обратно не поднимаем */
           if(!(k in local) && EDITS_TS[k] && mineNewer(k)) return;
           out[k] = remote.value[k];
@@ -3689,7 +3710,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-11-04c';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-11-04d';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)

@@ -187,6 +187,82 @@ module.exports = async (req, res) => {
       const key = body.key;
       if (!ALLOWED.includes(key)) return res.status(400).end(JSON.stringify({ ok: false, reason: 'bad-key' }));
 
+      // ---- слияние по ячейкам ----
+      // Раньше браузер присылал весь набор правок целиком, и сервер клал его поверх
+      // прежнего. Если два человека работали одновременно, тот, кто сохранился вторым,
+      // стирал правки первого: «внесли — назавтра пропало». Теперь сервер сличает
+      // каждую ячейку по времени правки и берёт ту сторону, что свежее.
+      //   cells — набор правок браузера, mts — когда правили каждую ячейку,
+      //   base  — время записи в базе, с которой браузер в последний раз сверялся.
+      // Ячейку, которой у браузера нет, снимаем только если он её действительно видел
+      // и снял; чужую, появившуюся после его последней сверки, сохраняем.
+      if (body.cells && typeof body.cells === 'object' && !Array.isArray(body.cells)) {
+        const rawCur = await redis(['GET', PREFIX + key]);
+        let cur = null;
+        try { cur = rawCur ? JSON.parse(rawCur) : null; } catch { cur = null; }
+        const curV = (cur && cur.value && typeof cur.value === 'object' && !Array.isArray(cur.value)) ? cur.value : {};
+        const curT = (cur && cur.mts && typeof cur.mts === 'object') ? cur.mts : {};
+        const inV = body.cells;
+        const inT = (body.mts && typeof body.mts === 'object') ? body.mts : {};
+        const base = Number(body.base) || 0;
+        const outV = {}, outT = {};
+        let kept = 0, removed = 0, applied = 0, held = 0;
+
+        for (const k of Object.keys(curV)) {
+          if (Object.prototype.hasOwnProperty.call(inV, k)) continue;   // решается ниже
+          const b = Number(curT[k]) || 0, d = Number(inT[k]) || 0;
+          if (d && d >= b) { removed++; continue; }        // браузер снял правку позже
+          // Ровесницу нашей последней сверки не трогаем: неясно, видел он её или нет,
+          // а потерять свежую чужую правку хуже, чем лишний раз сохранить снятую.
+          if (base && !d && b < base) { removed++; continue; }   // он её видел и снял
+          outV[k] = curV[k]; if (b) outT[k] = b; kept++;   // чужая и свежая — бережём
+        }
+        for (const k of Object.keys(inV)) {
+          const a = Number(inT[k]) || 0, b = Number(curT[k]) || 0;
+          if (Object.prototype.hasOwnProperty.call(curV, k) && b > a) {
+            outV[k] = curV[k]; outT[k] = b; held++; continue;         // чужая правка свежее
+          }
+          outV[k] = inV[k]; if (a) outT[k] = a; applied++;
+        }
+        await redis(['SET', PREFIX + key, JSON.stringify({ ts: Date.now(), value: outV, mts: outT })]);
+        return res.status(200).end(JSON.stringify({ ok: true, applied, kept, held, removed,
+          total: Object.keys(outV).length }));
+      }
+
+      // ---- объединение списков и отметок ----
+      // Та же беда была у добавленных вручную заявок и у отметок об удалении:
+      // запись целиком затирала то, что в это же время завёл другой человек.
+      if (body.union !== undefined && body.union !== null) {
+        const rawCur = await redis(['GET', PREFIX + key]);
+        let cur = null;
+        try { cur = rawCur ? JSON.parse(rawCur) : null; } catch { cur = null; }
+        let out;
+        if (Array.isArray(body.union)) {
+          const idOf = x => (x && typeof x === 'object') ? String(x.i) : String(x);
+          const arr = (cur && Array.isArray(cur.value)) ? cur.value.slice() : [];
+          const pos = new Map();
+          arr.forEach((x, i) => pos.set(idOf(x), i));
+          for (const item of body.union) {
+            const id = idOf(item);
+            if (pos.has(id)) arr[pos.get(id)] = item;
+            else { pos.set(id, arr.length); arr.push(item); }
+          }
+          const gone = Array.isArray(body.gone) ? body.gone.map(String) : [];
+          out = gone.length ? arr.filter(x => gone.indexOf(idOf(x)) < 0) : arr;
+        } else if (typeof body.union === 'object') {
+          out = Object.assign({}, (cur && cur.value && typeof cur.value === 'object' && !Array.isArray(cur.value)) ? cur.value : {});
+          for (const k of Object.keys(body.union)) {
+            const a = Number(body.union[k]) || 0, b = Number(out[k]) || 0;
+            if (a >= b) out[k] = body.union[k];
+          }
+        } else {
+          return res.status(400).end(JSON.stringify({ ok: false, reason: 'bad-union' }));
+        }
+        await redis(['SET', PREFIX + key, JSON.stringify({ ts: Date.now(), value: out })]);
+        return res.status(200).end(JSON.stringify({ ok: true,
+          total: Array.isArray(out) ? out.length : Object.keys(out).length }));
+      }
+
       if (Array.isArray(body.merge)) {
         const rawCur = await redis(['GET', PREFIX + key]);
         let cur = null;
