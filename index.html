@@ -1171,6 +1171,24 @@ var RULES = [
    test:function(r){ return ['days_close','hires','interviews','closed_total'].some(function(f){
      var v=toNum(r[f]); return v!==null && isNaN(v); }); },
    msg:'В числовом поле указано не число'},
+  /* Заявку заводят кнопкой «Добавить позицию», и подразделение подставляется
+     из включённого фильтра. Так «Сборщик» с линии сборки пылесосов оказался
+     в банке «Доро Молия»: отдел и TEAM остались артеловские, а подразделение —
+     то, по которому стоял фильтр. Сверяем TEAM с подразделением, но только у
+     заведённых здесь строк: в Google Sheets заявку законно ведёт чужая команда. */
+  {key:'manual_wrong_co', field:'companyRaw', label:'Заявка не в своём подразделении',
+   test:function(r){
+     if(!isNewRow(r.i)) return false;
+     var t = companyKey(r.team), c = companyKey(r._company || r.companyRaw);
+     if(!t || !c || t === c) return false;
+     return !!COMPANY_CANON[t];            /* TEAM называет существующее подразделение */
+   },
+   msg:function(r){
+     return 'Заявка числится за «' + (r._company || r.companyRaw || 'без подразделения') +
+            '», а TEAM указывает на «' + r.team + '». Похоже, её завели при включённом ' +
+            'фильтре другого подразделения — поправьте подразделение или удалите заявку ' +
+            'и заведите её у себя.';
+   }},
   {key:'fio_twin',       field:'fio',       label:'Один сотрудник на разных позициях',
    test:function(r){ return fioTwins(r).length>0; },
    msg:function(r){
@@ -2519,9 +2537,20 @@ function nextIdFor(company){
 document.getElementById('addRowBtn').addEventListener('click', function(){
   if(!canEdit()){ alert('Недостаточно прав для добавления позиции.'); return; }
   var rowNo = newRowNumber();
-  var fc = document.getElementById('f-company').value;
+  /* Без подразделения заявка потом «висит во всех»: по ней не отработает ни фильтр,
+     ни разграничение доступа. У учётки компании берём её собственное название,
+     а администратора просим выбрать — иначе заявка уходит не в своё подразделение. */
+  var fc = document.getElementById('f-company').value ||
+           (isCompanyUser() ? (sessionCompanies()[0] || '') : '');
+  if(!fc){
+    alert('Сначала выберите подразделение в фильтре «ПОДРАЗДЕЛЕНИЕ» — заявка заводится ' +
+          'в то подразделение, по которому стоит фильтр. Без него она не попадёт ни в один отчёт.');
+    var fcEl = document.getElementById('f-company');
+    if(fcEl && fcEl.focus) fcEl.focus();
+    return;
+  }
   /* номер заявки продолжает нумерацию своего подразделения, а не всего холдинга */
-  var maxId = nextIdFor(fc || (isCompanyUser() ? sessionCompanies()[0] : ''));
+  var maxId = nextIdFor(fc);
   var row = {i:rowNo, id:maxId, cat:null, pos:null, dept:null,
     companyRaw:(fc||null), open:null, close:null, days_close:null, hires:1,
     interviews:null, closed_total:null, fio:null, note:null, status:STATUS_OPEN, team:null,
@@ -3710,7 +3739,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-11-04d';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-11-04e';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
