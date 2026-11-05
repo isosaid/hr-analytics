@@ -1046,14 +1046,16 @@ var TEAM_PAIRS = {};
 var SHEET_COMPANIES = {};
 function buildCompanyRegistry(rows){
   var byKey = {};
+  /* Пары и перечень подразделений берём из RAW — это как есть в Google Sheets.
+     По строкам с наложенными правками их строить нельзя: правка сама бы себя
+     и узаконила, а именно её мы и проверяем. */
   TEAM_PAIRS = {}; SHEET_COMPANIES = {};
+  RAW.forEach(function(s){
+    var ck = companyKey(s.companyRaw), tk = companyKey(s.team);
+    if(ck) SHEET_COMPANIES[ck] = 1;
+    if(ck && tk) TEAM_PAIRS[ck + '|' + tk] = 1;
+  });
   rows.forEach(function(r){
-    if(!isNewRow(r.i)){            /* только строки таблицы: заведённая здесь заявка
-                                      иначе сама себя признала бы правильной */
-      var ck = companyKey(r.companyRaw), tk = companyKey(r.team);
-      if(ck) SHEET_COMPANIES[ck] = 1;
-      if(ck && tk) TEAM_PAIRS[ck + '|' + tk] = 1;
-    }
     var name = normCompany(r.companyRaw);
     var k = companyKey(name);
     if(!k) return;
@@ -3757,7 +3759,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-11-05b';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-11-05c';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
@@ -4590,6 +4592,55 @@ function fixManualTeamOnce(){
       return '№'+x.id+' ('+(x.was||'пусто')+')'; }).join(', ')+(done.length>6?' …':'')});
   refreshFilterOptions(); renderAll(); renderHistory();
 }
+/* TEAM, легший поверх таблицы чужим значением.
+   У заявок «Доро Молия» №22–28 в дашборде стоял «ООО "Таком"», тогда как в
+   Google Sheets там «ООО МДО "Доро Молия"». Снимаем такие правки: только там,
+   где в таблице TEAM заполнен, а выставленное сочетание «подразделение × TEAM»
+   не встречается в таблице ни разу. Заполнение пустого TEAM не трогаем —
+   это нормальный ввод. Перед правкой кладём снимок, всё пишем в журнал. */
+var TEAMPAIR_TAG = 'teampair-2026-11-05';
+function fixSheetTeamOnce(){
+  if(!SESSION || !isAdmin()) return;
+  if(DB.get('teampair','') === TEAMPAIR_TAG) return;
+  if(!(GS_FETCHED || SHEET_SEEN)) return;        /* без данных таблицы судить не о чем */
+  if(!Object.keys(EDITS).length) return;         /* правки ещё не подтянулись из базы */
+  DB.set('teampair', TEAMPAIR_TAG);
+  var hits = [];
+  ROWS.forEach(function(r){
+    if(isNewRow(r.i)) return;
+    var ek = editKey(r, 'team');
+    if(!EDITS.hasOwnProperty(ek)) return;
+    var src = RAW.filter(function(x){ return x.i===r.i; })[0];
+    if(!src || !src.team) return;                /* в таблице TEAM пуст — это ввод, не подмена */
+    var c = companyKey(r._company || r.companyRaw);
+    var t = companyKey(EDITS[ek]);
+    if(!c || !t || t === companyKey(src.team)) return;
+    if(TEAM_PAIRS[c + '|' + t]) return;          /* такое сочетание в таблице есть */
+    hits.push({i:r.i, id:r.id, co:(r._company||r.companyRaw), was:EDITS[ek], back:src.team, ek:ek});
+  });
+  if(!hits.length) return;
+  var snaps = getSnaps();
+  snaps.unshift({name:'До возврата TEAM к данным таблицы', user:SESSION.login, when:nowStr(),
+                 ts:new Date().toISOString(), edits:JSON.parse(JSON.stringify(EDITS)),
+                 newrows:JSON.parse(JSON.stringify(NEWROWS))});
+  saveSnaps(snaps.slice(0,30));
+  hits.forEach(function(h){
+    delete EDITS[h.ek]; markEditDeleted(h.ek);
+    logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login,
+      i:h.i, id:h.id, k:null, field:'team', fieldLabel:'TEAM возвращён к данным таблицы',
+      before:String(h.was), after:String(h.back)});
+  });
+  saveDelEdits(); persistEdits(); assignKeys(); applyEdits(); rebuild();
+  logChange({ts:new Date().toISOString(), when:nowStr(), user:SESSION.login, bulk:true,
+    fieldLabel:'TEAM возвращён к данным таблицы',
+    before:hits.length+' заявок', after:hits.slice(0,6).map(function(h){
+      return '№'+h.id+' '+h.co+': '+h.was+' → '+h.back; }).join('; ')+(hits.length>6?' …':'')});
+  var m = document.getElementById('auditMsg');
+  if(m) m.innerHTML = '<span style="color:var(--green)">TEAM возвращён к данным таблицы: '+
+    hits.length+' заявок. Прежние значения — в снимке «До возврата TEAM к данным таблицы».</span>';
+  refreshFilterOptions(); renderAll(); renderHistory();
+}
+
 /* Срок закрытия стал считаться по датам. Ранее вписанные вручную значения
    иначе остались бы замороженными: поле больше не правится, и снять их было бы нечем. */
 var DAYS_TAG = 'days-auto-2026-10-20';
@@ -5157,6 +5208,7 @@ function startApp(user){
   setTimeout(function(){ try{ forcedRenumberOnce(); }catch(e){ console.error('renum', e); } }, 55000);
   setTimeout(function(){ try{ moveTakomRowsOnce(); }catch(e){ console.error('takom', e); } }, 60000);
   setTimeout(function(){ try{ fixManualTeamOnce(); }catch(e){ console.error('team', e); } }, 65000);
+  setTimeout(function(){ try{ fixSheetTeamOnce(); }catch(e){ console.error('teampair', e); } }, 68000);
   setTimeout(function(){ try{ dropDaysEditsOnce(); }catch(e){ console.error('daysauto', e); } }, 70000);
   setTimeout(function(){ try{ clearWrongFioOnce(); }catch(e){ console.error('fiofix', e); } }, 75000);
   setTimeout(function(){ try{ swapReversedDatesOnce(); }catch(e){ console.error('swapdates', e); } }, 20000);
