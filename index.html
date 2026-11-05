@@ -1040,13 +1040,18 @@ var COMPANY_CANON = {};
    «Авесто Групп». Поэтому заведённую здесь заявку считаем сомнительной только
    тогда, когда такой пары в таблице нет ни разу. */
 var TEAM_PAIRS = {};
+/* Подразделения, известные самой таблице. Заведённое только здесь (например
+   «Зарфон», которого в Google Sheets нет ни листом, ни строкой) сюда не попадает:
+   по нему нельзя судить, куда относится заявка. */
+var SHEET_COMPANIES = {};
 function buildCompanyRegistry(rows){
   var byKey = {};
-  TEAM_PAIRS = {};
+  TEAM_PAIRS = {}; SHEET_COMPANIES = {};
   rows.forEach(function(r){
     if(!isNewRow(r.i)){            /* только строки таблицы: заведённая здесь заявка
                                       иначе сама себя признала бы правильной */
       var ck = companyKey(r.companyRaw), tk = companyKey(r.team);
+      if(ck) SHEET_COMPANIES[ck] = 1;
       if(ck && tk) TEAM_PAIRS[ck + '|' + tk] = 1;
     }
     var name = normCompany(r.companyRaw);
@@ -1192,8 +1197,8 @@ var RULES = [
      if(!isNewRow(r.i)) return false;
      var t = companyKey(r.team), c = companyKey(r._company || r.companyRaw);
      if(!t || !c || t === c) return false;
-     if(!COMPANY_CANON[t]) return false;   /* TEAM называет существующее подразделение */
-     if(!COMPANY_CANON[c]) return false;   /* подразделения ещё нет в таблице — не судим */
+     if(!SHEET_COMPANIES[t]) return false; /* такого подразделения в таблице нет — не судим */
+     if(!SHEET_COMPANIES[c]) return false;
      return !TEAM_PAIRS[c + '|' + t];      /* в таблице такой пары нет ни разу */
    },
    msg:function(r){
@@ -3752,7 +3757,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-11-05a';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-11-05b';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
