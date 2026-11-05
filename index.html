@@ -1035,9 +1035,20 @@ function inChartList(name){
   return !!CHART_KEYS[companyKey(name)];
 }
 var COMPANY_CANON = {};
+/* Какие сочетания «подразделение × TEAM» встречаются в самой таблице. Чужая команда
+   в TEAM — обычное дело: NERU и IMEI ведёт «Нет Солюшенс», часть подразделений —
+   «Авесто Групп». Поэтому заведённую здесь заявку считаем сомнительной только
+   тогда, когда такой пары в таблице нет ни разу. */
+var TEAM_PAIRS = {};
 function buildCompanyRegistry(rows){
   var byKey = {};
+  TEAM_PAIRS = {};
   rows.forEach(function(r){
+    if(!isNewRow(r.i)){            /* только строки таблицы: заведённая здесь заявка
+                                      иначе сама себя признала бы правильной */
+      var ck = companyKey(r.companyRaw), tk = companyKey(r.team);
+      if(ck && tk) TEAM_PAIRS[ck + '|' + tk] = 1;
+    }
     var name = normCompany(r.companyRaw);
     var k = companyKey(name);
     if(!k) return;
@@ -1181,7 +1192,9 @@ var RULES = [
      if(!isNewRow(r.i)) return false;
      var t = companyKey(r.team), c = companyKey(r._company || r.companyRaw);
      if(!t || !c || t === c) return false;
-     return !!COMPANY_CANON[t];            /* TEAM называет существующее подразделение */
+     if(!COMPANY_CANON[t]) return false;   /* TEAM называет существующее подразделение */
+     if(!COMPANY_CANON[c]) return false;   /* подразделения ещё нет в таблице — не судим */
+     return !TEAM_PAIRS[c + '|' + t];      /* в таблице такой пары нет ни разу */
    },
    msg:function(r){
      return 'Заявка числится за «' + (r._company || r.companyRaw || 'без подразделения') +
@@ -3739,7 +3752,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-11-04e';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-11-05a';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
