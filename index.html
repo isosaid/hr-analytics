@@ -219,6 +219,14 @@
   .icon-btn{background:transparent;border:1.5px solid #333a4d;color:#aeb3c4;font-size:12.5px;font-weight:600;
     padding:7px 12px;border-radius:9px;cursor:pointer;font-family:inherit;}
   .icon-btn:hover{border-color:var(--red);color:#ff8f7d;}
+  /* Переход на HR-портал — и с экрана входа, и из шапки */
+  .home-btn{text-decoration:none;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;}
+  .home-btn:hover{border-color:#5f7dff;color:#9fc4ff;}
+  /* окно входа — светлое, поэтому цвета здесь свои, не как в тёмной шапке */
+  .login-home{display:flex;align-items:center;justify-content:center;gap:7px;margin-top:10px;
+    padding:10px;border:1.5px solid #dfe3ec;border-radius:10px;font-size:13.5px;font-weight:700;
+    color:#55607a;background:#fff;text-decoration:none;font-family:inherit;}
+  .login-home:hover{border-color:var(--blue);color:var(--blue);background:var(--blue-soft);}
   .hist-tbl td{font-size:12.5px;}
   .val-old{color:var(--red);text-decoration:line-through;} .val-new{color:var(--green);font-weight:700;}
   .who{font-weight:700;} .when{color:var(--muted);white-space:nowrap;}
@@ -249,6 +257,7 @@
     </div>
     <div class="login-err" id="loginErr"></div>
     <button class="btn primary login-btn" id="loginBtn">Войти</button>
+    <a class="login-home" id="loginHomeBtn" href="https://hr-portal-olive-alpha.vercel.app/">🏠 В главную</a>
   </div>
 </div>
 
@@ -271,6 +280,8 @@
         <span class="user-av" id="userAv">–</span>
         <span><b id="userName">–</b><br><span class="user-role" id="userRole">–</span></span>
       </div>
+      <a class="icon-btn home-btn" id="homeBtn" href="https://hr-portal-olive-alpha.vercel.app/"
+         title="Вернуться на HR-портал">🏠 В главную</a>
       <button class="icon-btn" id="logoutBtn" title="Выйти">Выйти</button>
     </div>
   </header>
@@ -3759,7 +3770,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-11-05c';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-11-13a';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
@@ -5265,6 +5276,21 @@ document.getElementById('logoutBtn').addEventListener('click', function(){
   document.getElementById('loginScreen').style.display='';
   document.getElementById('loginUser').value=''; document.getElementById('loginPass').value='';
 });
+
+/* Уход на HR-портал. Правки уходят в базу пачкой раз в несколько секунд, поэтому
+   перед переходом дописываем несохранённое: на beforeunload браузер успевает не всегда. */
+(function(){
+  var home = document.getElementById('homeBtn');
+  if(!home) return;
+  home.addEventListener('click', function(ev){
+    if(!CLOUD_T) return;                       /* всё уже в базе — уходим сразу */
+    ev.preventDefault();
+    clearTimeout(CLOUD_T); CLOUD_T = null;
+    try{ cloudFlush(); }catch(e){}
+    var url = home.getAttribute('href');
+    setTimeout(function(){ location.href = url; }, 400);
+  });
+})();
 
 document.getElementById('resetAuthBtn').addEventListener('click', function(){
   if(!isAdmin()) return;
