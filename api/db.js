@@ -154,16 +154,27 @@ module.exports = async (req, res) => {
       const list = String(q.keys || '').split(',').map(s => s.trim()).filter(Boolean);
       // без параметров отдаём весь набор: адрес выглядит как обычный файл данных
       const keys = list.length ? list.filter(k => ALLOWED.includes(k)) : ALLOWED;
+      // since — версии записей, которые у браузера уже есть (см. ветку POST read)
+      let since = null;
+      try { const s = q.since ? JSON.parse(q.since) : null;
+            if (s && typeof s === 'object' && !Array.isArray(s)) since = s; } catch { since = null; }
       const out = {};
+      let sent = 0, skipped = 0;
       if (keys.length) {
         const raw = await redis(['MGET', ...keys.map(k => PREFIX + k)]);
         keys.forEach((k, i) => {
           const v = raw && raw[i];
           if (!v) { out[k] = null; return; }
-          try { out[k] = typeof v === 'string' ? JSON.parse(v) : v; } catch { out[k] = null; }
+          let parsed;
+          try { parsed = typeof v === 'string' ? JSON.parse(v) : v; } catch { out[k] = null; return; }
+          const have = since ? Number(since[k]) || 0 : 0;
+          if (have && parsed && typeof parsed.ts === 'number' && have >= parsed.ts) {
+            out[k] = { ts: parsed.ts, unchanged: true }; skipped++; return;
+          }
+          out[k] = parsed; sent++;
         });
       }
-      return res.status(200).end(JSON.stringify({ ok: true, data: out, now: Date.now() }));
+      return res.status(200).end(JSON.stringify({ ok: true, data: out, now: Date.now(), sent, skipped }));
     }
 
     if (req.method === 'POST') {
@@ -172,16 +183,29 @@ module.exports = async (req, res) => {
       // Чтение через POST: без параметров в адресе — их часто режут антивирусы и фильтры
       if (Array.isArray(body.read)) {
         const keys = body.read.map(k => String(k).trim()).filter(k => ALLOWED.includes(k));
+        // since — версии записей, которые у браузера уже есть. Что с тех пор не
+        // менялось, по сети не гоняем: отвечаем одной отметкой времени. Раньше
+        // каждый опрос тянул весь набор заново, и на этом сгорел лимит трафика
+        // между CDN и функцией.
+        const since = (body.since && typeof body.since === 'object' && !Array.isArray(body.since))
+          ? body.since : null;
         const out = {};
+        let sent = 0, skipped = 0;
         if (keys.length) {
           const raw = await redis(['MGET', ...keys.map(k => PREFIX + k)]);
           keys.forEach((k, i) => {
             const v = raw && raw[i];
             if (!v) { out[k] = null; return; }
-            try { out[k] = typeof v === 'string' ? JSON.parse(v) : v; } catch { out[k] = null; }
+            let parsed;
+            try { parsed = typeof v === 'string' ? JSON.parse(v) : v; } catch { out[k] = null; return; }
+            const have = since ? Number(since[k]) || 0 : 0;
+            if (have && parsed && typeof parsed.ts === 'number' && have >= parsed.ts) {
+              out[k] = { ts: parsed.ts, unchanged: true }; skipped++; return;
+            }
+            out[k] = parsed; sent++;
           });
         }
-        return res.status(200).end(JSON.stringify({ ok: true, data: out, now: Date.now() }));
+        return res.status(200).end(JSON.stringify({ ok: true, data: out, now: Date.now(), sent, skipped }));
       }
 
       const key = body.key;

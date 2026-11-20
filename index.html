@@ -638,11 +638,16 @@ var DB = {
   set: function(key, val){
     var s = JSON.stringify(val);
     var okw = true;
+    /* Записали то же, что и лежало? Тогда в базу слать нечего. Прежде так уходил
+       список учёток при каждом опросе: страница его пересобирала, значение не
+       менялось, а запрос на сервер всё равно шёл. */
+    var same = false;
+    try{ same = (this.ok ? localStorage.getItem(DB_PREFIX+key) : this.mem[key]) === s; }catch(e0){}
     try{ if(this.ok) localStorage.setItem(DB_PREFIX+key, s); else this.mem[key]=s; }
     catch(e){ console.warn('DB full', e); this.mem[key]=s; okw=false; }
     /* зеркалим в общую базу Vercel */
     try{
-      if(typeof CLOUD!=='undefined' && CLOUD.keys.indexOf(key)>=0){
+      if(!same && typeof CLOUD!=='undefined' && CLOUD.keys.indexOf(key)>=0){
         /* отметку времени ставим всегда, даже если база сейчас недоступна:
            иначе правка, сделанная без связи, проиграет старому значению из базы */
         if(key!=='history' && key!=='logins'){
@@ -3180,10 +3185,30 @@ var API_PATHS = ['/data/hr.json','/reports/summary','/hr/data','/service/records
 var API_HEAD = {'Content-Type':'text/plain;charset=UTF-8'};
 var CLOUD = {on:null, base:null,
              /* лёгкие ключи — их тянем каждый раз */
-             keys:['users','edits','newrows','snapshots','gs','removed','delrows','deledits'],
-             /* журналы весят под мегабайт: качаем один раз за сеанс и по заходу в «Историю» */
-             heavy:['history','logins'], gotHeavy:false,
+             keys:['users','edits','newrows','gs','removed','delrows','deledits'],
+             /* Журналы весят под мегабайт, а «Версии данных» — это до 30 полных копий
+                всех правок, несколько мегабайт на запрос. Всё это качаем один раз за
+                сеанс и при заходе в «Историю», где оно и показывается. Пока снимки
+                тянулись при каждом опросе, на них ушёл весь месячный лимит Vercel. */
+             heavy:['history','logins','snapshots'], gotHeavy:false,
              journals:{history:HIST_CAP_REF(), logins:LOGIN_CAP_REF()}, pushing:{}, lastPull:0};
+/* Отметки времени записей в базе — такими, какими их прислал сервер. Берём только
+   из ответов сервера: ключ k+'_ts' для этого не годится, там время НАШЕЙ последней
+   местной записи, и по нему сервер решил бы, что у нас всё свежее, и перестал бы
+   присылать чужие правки. */
+var CLOUD_SEEN = null;
+function cloudSeen(){
+  if(!CLOUD_SEEN) CLOUD_SEEN = DB.get('cloud_seen', {}) || {};
+  return CLOUD_SEEN;
+}
+function cloudSeenUpdate(d){
+  var seen = cloudSeen(), changed = false;
+  Object.keys(d || {}).forEach(function(k){
+    var rec = d[k];
+    if(rec && typeof rec.ts === 'number' && rec.ts > (seen[k] || 0)){ seen[k] = rec.ts; changed = true; }
+  });
+  if(changed) DB.set('cloud_seen', seen);
+}
 function HIST_CAP_REF(){ return 1500; }
 function LOGIN_CAP_REF(){ return 800; }
 
@@ -3373,9 +3398,13 @@ function cloudPull(pathIdx){
   if(wantHeavy) CLOUD.gotHeavy = true;
   var req = (path === '/data/hr.json')
     /* обязательно со списком ключей: без него сервер отдаёт всё, включая копию таблицы */
-    ? fetch(path + '?keys=' + encodeURIComponent(askKeys.join(',')), {cache:'no-store'})
+    ? fetch(path + '?keys=' + encodeURIComponent(askKeys.join(',')) +
+            '&since=' + encodeURIComponent(JSON.stringify(cloudSeen())), {cache:'no-store'})
     : fetch(path, {method:'POST', headers:API_HEAD,
-                   body:JSON.stringify({read:askKeys}), cache:'no-store'});
+                   /* since — что у нас уже есть. Сервер пришлёт только то, что с тех пор
+                      изменилось, остальное отметит как «без изменений» и гонять по сети
+                      не станет: раньше каждый опрос тянул весь набор заново. */
+                   body:JSON.stringify({read:askKeys, since:cloudSeen()}), cache:'no-store'});
   return req
     .then(function(r){
       if(r.status===501){ CLOUD.on=false; cloudSay('MS Access / SQL — база не подключена, данные только в этом браузере.');
@@ -3415,7 +3444,12 @@ function cloudPull(pathIdx){
 
       /* журналы: сливаем в обе стороны по uid */
       ['history','logins'].forEach(function(k){
-        var remote = (d[k] && Array.isArray(d[k].value)) ? d[k].value : [];
+        /* Журналы запрашиваются не при каждом опросе. Если ключа в ответе нет,
+           считать базу пустой нельзя: прежде мы так и делали — и каждые пять минут
+           отправляли туда весь журнал заново. На этом и сгорел месячный лимит
+           трафика между CDN и функцией. */
+        if(!d[k] || !Array.isArray(d[k].value)) return;
+        var remote = d[k].value;
         var local = DB.get(k, []);
         var seen = {}, merged = [];
         remote.concat(local).forEach(function(x){
@@ -3435,6 +3469,9 @@ function cloudPull(pathIdx){
          у каждого накопились свои — при замене работа одного затирала бы работу другого */
       (function mergeEdits(){
         var remote = d['edits'];
+        /* сервер сообщил, что с нашей прошлой сверки правки не менялись —
+           сливать нечего, но версию базы запомнить надо */
+        if(remote && remote.unchanged && remote.ts){ DB.set('edits_base', remote.ts); return; }
         if(!remote || !remote.value || typeof remote.value!=='object') return;
         /* Версия набора в базе, с которой мы сверились. Её отдаём серверу при записи:
            по ней он отличает ячейку, которую мы сняли, от чужой, появившейся уже
@@ -3559,6 +3596,9 @@ function cloudPull(pathIdx){
           try{ autoRepairMovedOnce(); }catch(e3){ console.error('movedback', e3); }
         }catch(err){ console.error('merge', err); }
       }
+      /* запоминаем версии записей в базе — в следующий раз просим только то,
+         что с тех пор изменилось */
+      try{ cloudSeenUpdate(d); }catch(e5){ console.error('seen', e5); }
       CLOUD.lastPull = Date.now(); CLOUD.fails = 0;
       cloudOkSay();
       return d;
@@ -3770,7 +3810,7 @@ function sheetWins(was, nr, f, cmpv){
   if(!was || !nr) return false;
   return cmpv(was[f]) !== cmpv(nr[f]);
 }
-var BUILD = '2026-11-13a';   /* версия сборки — видна в подвале и в журнале входов */
+var BUILD = '2026-11-20a';   /* версия сборки — видна в подвале и в журнале входов */
 /* ---- сообщение о новой версии ----
    Браузер может держать страницу из кэша, и человек неделями работает со старой
    сборкой, не зная об этом. Раз в 15 минут сверяем версию с сервером (файл в 30 байт)
